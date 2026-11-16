@@ -1,0 +1,23 @@
+# 测试夹具：校验八项全过的派工计划
+project: checkdemo
+kind: 单仓软件
+version: v0.1.0
+modules:
+  - repo: D:\devs\dev4\demo
+    max_workers: 2
+    regression: python -m pytest -q
+
+tasks:
+  - id: T01
+    title: 地基任务
+    status: ready
+    files: [superdev/a.py, tests/test_a.py]
+    size: small
+
+  # §1.1 第 5 条的复现微任务：脚本指向本仓库真实存在的夹具文件
+  - id: repro:case-1
+    title: 复现失败用例 case-1
+    status: draft
+    files: [tests/fixtures/check/repro_ok.sh]
+    size: trivial
+    depends_on: [T01]
