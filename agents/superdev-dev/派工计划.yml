@@ -13,7 +13,7 @@ statuses:
 - merged
 - done
 modules:
-- repo: D:\devs\dev4\superdev
+- repo: .
   max_workers: 4
   regression: python -m pytest -q
 tasks:

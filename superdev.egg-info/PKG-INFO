@@ -1,0 +1,130 @@
+Metadata-Version: 2.4
+Name: superdev
+Version: 0.1.0
+Summary: An execution-reliability layer that lets AI teams ship software: AI writes the code, the program enforces the rules.
+License-Expression: Apache-2.0
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: pyyaml>=6
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Dynamic: license-file
+
+# superdev
+
+**Other tools assign work to AI agents. superdev makes it land green.**
+
+[![CI](https://github.com/yinrong/superdev/actions/workflows/tests.yml/badge.svg)](https://github.com/yinrong/superdev/actions/workflows/tests.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-342%20passing-brightgreen.svg)](tests/)
+
+superdev is an execution-reliability layer for AI coding teams: an open-source control tower that turns a fleet of coding agents (Claude Code, Codex, ZCode, Kimi, ...) into workers that actually finish — tests passing, MR opened, evidence attached — without a human babysitting the loop.
+
+[简体中文](README.zh-CN.md) · [Design docs](design/README.md)
+
+## The problem it kills
+
+If you run multiple coding agents, you have met this wall:
+
+- An agent edits until tests fail, then keeps editing the broken tree. Every retry drifts further from green.
+- The same strategy gets retried five times. Tokens burn. Progress is zero.
+- A human finds out hours later, reads a chat log, and guesses what was already tried.
+
+Most tools treat these as exceptions. superdev treats failure as a **first-class lifecycle**:
+
+```
+task starts ──▶ research budget (by task size)
+                 │
+                 ▼
+       ┌── red-green loop ──────────────┐
+       │  start from last-green commit  │
+       │  red → roll back, feed logs    │
+       │  2nd red → forced research,    │
+       │           strategy must cite   │
+       │           findings, or stop    │
+       └──────────────┬─────────────────┘
+                      ▼
+   green? ─▶ review ─▶ quality gate ─▶ merge & sync back
+   stuck? ─▶ structured report ("what we tried") ─▶ one-click human decision ─▶ auto-resume
+```
+
+Nothing lands red. Nothing spins silently. Every dead end is documented before a human is asked.
+
+## 60-second quickstart
+
+```bash
+git clone https://github.com/yinrong/superdev
+cd superdev
+pip install -e ".[dev]"
+python -m pytest -q          # 342 passed
+```
+
+Then the self-hosting party trick — the repo validates its own development ledger:
+
+```bash
+python superdev_cli.py check agents/superdev-dev/派工计划.yml
+# 校验通过：0 处问题
+python superdev_cli.py round agents/superdev-dev
+# 投影已刷新：21 个任务
+```
+
+Import a spec-kit plan and run it as tracked tasks:
+
+```bash
+python superdev_cli.py import-spec <spec-dir> plan.yml
+python superdev_cli.py check plan.yml
+```
+
+## What's inside
+
+One module, one job — 17 modules, each with its own test file:
+
+| Layer | Modules |
+|---|---|
+| Ledger & rules | `ledger` (git-versioned task ledger) · `check` (8-rule contract validator) · `hooks` (program-enforced boundaries) |
+| Execution discipline | `redgreen` (green-point branching, rollback, 2-red research gate) · `research` (budget tiers + module knowledge base) · `engines` (pluggable worker adapters) |
+| Flow & state | `state` (task state machine) · `events` (tamper-evident hash-chained log) · `projection` (SQLite read model) |
+| Safety nets | `supervise` (stall detection, 5-part escalation reports, auto-resume) · `guard` (resource guard) · `gate` (lint/type/test/build pipeline) · `reviewer` (second-pair-of-eyes worker) · `ciadapter` (GitHub Actions / GitLab CI watchers) |
+| Humans & input | `web` (kanban + one-click decision UI, token auth) · `clarify` (requirements clarifier) · `importspec` (spec-kit import) |
+
+## How it compares
+
+| Capability | superdev | spec-kit | Superpowers | Aider | Vibe Kanban |
+|---|---|---|---|---|---|
+| Failure lifecycle: budget → research → report → decision → auto-resume | ✔ | ✘ | ✘ | ✘ | ✘ |
+| Red-green discipline enforced by code (not prompts) | ✔ | ✘ | partial (TDD gate) | ✔ (single session) | ✘ |
+| Multi-repo task fanout, open source | ✔ | ✘ | ✘ | ✘ | ✘ |
+| Engine-agnostic workers (any CLI agent) | ✔ | ✔ | ✘ | ✘ | ✔ |
+| Event-driven state machine + web decision UI | ✔ | ✘ | ✘ | ✘ | ✘ |
+| Self-hosting: repo built by its own pipeline | ✔ | partial | ✘ | ✘ | ✘ |
+| Maintenance status | active | active | active | slowed (community fork) | sunset (2026-04) |
+
+spec-kit plans the right thing; superdev lands it green. They compose: import a spec-kit plan, superdev runs it.
+
+## Self-hosting proof
+
+This repository was built by superdev itself, dogfooded end to end:
+
+- **21 tasks** in a public ledger ([agents/superdev-dev/](agents/superdev-dev/派工计划.yml)), dispatched to **14 worker sessions**
+- **8 green points**: every merge happened only after the full suite passed at a new high-water mark (59 → 143 → 223 → 239 → 310 → 342 tests)
+- The contract validator (`check`) rejected this repo's own ledger twice during development — once for a file-boundary violation, once for over-parallel dispatch. Both were fixed through the rules, not around them.
+
+## Documentation
+
+- [中文 README](README.zh-CN.md)
+- [Design: positioning & selling points](design/01-卖点.md) · [architecture](design/02-架构设计.md) · [detailed design](design/03-详细设计.md) · [lessons from our predecessor](design/04-bigdev问题与改进.md) · [competitive analysis](design/05-竞品对比.md)
+- Contracts: [manager](commands/superdev-manage.md) · [worker](commands/superdev-work.md)
+
+## Status & roadmap
+
+v0.1 — core loop complete: ledger, red-green discipline, research budgets, event machine, supervision, decision UI, CI watchers, spec-kit import. 342 tests, zero known issues.
+
+Roadmap (deliberately not in v0.1): cloud-synced kanban, pluggable edit engine, hosted offering.
+
+## Contributing & license
+
+Tasks enter the ledger before code does — read [CONTRIBUTING.md](CONTRIBUTING.md) and the [worker contract](commands/superdev-work.md). All PRs must keep the suite green.
+
+[Apache-2.0](LICENSE) © 2026 superdev contributors
