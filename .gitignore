@@ -5,3 +5,6 @@ __pycache__/
 *.tmp
 projection.db
 events.jsonl.fired
+superdev.egg-info/
+build/
+dist/
