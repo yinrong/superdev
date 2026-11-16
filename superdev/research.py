@@ -9,10 +9,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:  # 只为类型标注，避免运行期导入投影模块
+    from superdev.projection import Projection
 
 __all__ = [
     "ResearchError",
@@ -21,6 +26,8 @@ __all__ = [
     "can_research",
     "strategy_cites",
     "KnowledgeBase",
+    "derive_from_events",
+    "sync_from_projection",
 ]
 
 
@@ -181,3 +188,98 @@ class KnowledgeBase:
             yaml.safe_dump(self._data, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
+
+
+# ---- §8.8 知识库自动提炼：从回归事件派生"灵过/踩坑" ------------------------
+
+# 日志里"像错误"的行：pytest 的 E 前缀、Traceback、常见错误词。
+_ERROR_LINE_RE = re.compile(r"^E\b|Traceback|Error|ERROR|FAILED|Exception|失败")
+
+
+def _first_error_line(log_tail: str) -> str:
+    """取日志尾部第一个像错误的行；没有则退回首个非空行，再没有返回空串。"""
+    lines = [l.strip() for l in (log_tail or "").splitlines()]
+    for line in lines:
+        if line and _ERROR_LINE_RE.search(line):
+            return line
+    for line in lines:
+        if line:
+            return line
+    return ""
+
+
+def _error_keyword(log_tail: str) -> str:
+    """从首个错误行截取关键词（首个词，剥掉 pytest 的 E 前缀与标点）。"""
+    line = _first_error_line(log_tail)
+    if not line:
+        return "未知错误"
+    line = re.sub(r"^E\s+", "", line)
+    tokens = line.split()
+    keyword = tokens[0].strip("：:，,、；;。.`'\"()") if tokens else ""
+    return keyword or line[:40]
+
+
+def derive_from_events(rows: Iterable[Any]) -> list[tuple[str, str, str]]:
+    """从回归事件行（task_id/attempt/green/log_tail）提炼知识库记录。
+
+    每个任务按 attempt 排序后套三条规则，产出 (kind, pattern, note)：
+    - 红>=2 后转绿 → ("灵过", "曾两红后转绿：<首个错误行关键词>", note)；
+    - 首轮一次绿   → ("灵过", "首绿路径", "<task_id> 首轮即绿")；
+    - 红且从未绿   → ("踩坑", <首个错误行关键词>, note)。
+    一红后绿不出记录：没有稳定可提炼的模式。
+    """
+    by_task: dict[str, list[Any]] = {}
+    for row in rows:
+        by_task.setdefault(row["task_id"], []).append(row)
+
+    records: list[tuple[str, str, str]] = []
+    for task_id in sorted(by_task):
+        attempts = sorted(by_task[task_id], key=lambda r: r["attempt"])
+        greens = [bool(r["green"]) for r in attempts]
+        first_red_log = next(
+            (r["log_tail"] for r in attempts if not bool(r["green"])), ""
+        )
+        reds_before_green = 0
+        for green in greens:
+            if green:
+                break
+            reds_before_green += 1
+
+        if any(greens) and reds_before_green >= 2:
+            records.append((
+                "灵过",
+                f"曾两红后转绿：{_error_keyword(first_red_log)}",
+                f"任务 {task_id} 连红 {reds_before_green} 次后转绿，先查同关键词错误再动手",
+            ))
+        elif any(greens) and reds_before_green == 0:
+            records.append(("灵过", "首绿路径", f"{task_id} 首轮即绿"))
+        elif not any(greens):
+            records.append((
+                "踩坑",
+                _error_keyword(first_red_log),
+                f"任务 {task_id} 红 {len(attempts)} 次未绿，勿重复此路",
+            ))
+    return records
+
+
+def sync_from_projection(kb: KnowledgeBase, projection: Projection, project: str) -> int:
+    """从投影拉回归事件 → 提炼 → kb.record 去重写入，返回本次新增条数。
+
+    只同步 tasks.project 匹配的任务；未入 tasks 表的事件没有归属项目，
+    不参与本次同步。重复内容 record 自己去重，二次 sync 返回 0。
+    """
+    rows = projection.conn.execute(
+        """
+        SELECT re.task_id, re.attempt, re.green, re.log_tail
+        FROM regression_events re
+        JOIN tasks t ON t.task_id = re.task_id
+        WHERE t.project = ?
+        ORDER BY re.task_id, re.attempt
+        """,
+        (project,),
+    ).fetchall()
+    added = 0
+    for kind, pattern, note in derive_from_events(rows):
+        if kb.record(kind, pattern, note):
+            added += 1
+    return added

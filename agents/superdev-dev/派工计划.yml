@@ -1,120 +1,221 @@
-# superdev 自身开发的管理台账。管理端：ZCode 会话；工人：Agent 子进程。
-# 契约见 ../../commands/superdev-manage.md 与 ../../commands/superdev-work.md
 project: superdev-dev
 kind: 单仓软件
-modules:
-  - repo: D:\devs\dev4\superdev
-    max_workers: 3            # 并行工人上限（文件集不相交）
-    regression: python -m pytest -q
 version: v0.1.0
-statuses: [draft, ready, assigned, in_progress, evidence_wait, stuck, escalated, gating, merged, done]
-
+statuses:
+- draft
+- ready
+- assigned
+- in_progress
+- evidence_wait
+- stuck
+- escalated
+- gating
+- merged
+- done
+modules:
+- repo: D:\devs\dev4\superdev
+  max_workers: 3
+  regression: python -m pytest -q
 tasks:
-  # ---- Wave A：三件互不相依的地基，并行 ----
-  - id: T01-ledger
-    title: 台账加载器（agent.yml / 派工计划.yml / status.yml 读写）
-    files: [superdev/ledger.py, tests/test_ledger.py, tests/fixtures/ledger/]
-    size: medium
-    research: [读 design/03-详细设计.md §4 与 README 术语表"台账"]
-    depends_on: []
-    status: ready
-
-  - id: T02-events
-    title: 事件日志与防篡改哈希链（append-only + 链式签名 + 验证）
-    files: [superdev/events.py, tests/test_events.py]
-    size: medium
-    research: [读 design/03-详细设计.md §8.3]
-    depends_on: []
-    status: ready
-
-  - id: T03-research
-    title: 研究预算分档与模块知识库（trivial/small/medium/large + 灵过/踩坑注入）
-    files: [superdev/research.py, tests/test_research.py]
-    size: medium
-    research: [读 design/03-详细设计.md §1.4 与 §8.8]
-    depends_on: []
-    status: ready
-
-  # ---- Wave B：依赖 Wave A 的核心机制 ----
-  - id: T04-check
-    title: 契约校验器 check（八项校验：数量/分组/依赖无环/就绪数/归属/边界/策略引用研究/复现脚本/预算分档）
-    files: [superdev/check.py, tests/test_check.py]
-    size: medium
-    research: [读 design/03-详细设计.md §2]
-    depends_on: [T01-ledger]
-    status: draft
-
-  - id: T05-projection-state
-    title: SQLite 投影五表 + 状态机迁移表 + 事件消费派发
-    files: [superdev/projection.py, superdev/state.py, tests/test_projection.py, tests/test_state.py]
-    size: large
-    research: [读 design/03-详细设计.md §3、§4]
-    depends_on: [T01-ledger, T02-events]
-    status: draft
-
-  - id: T06-redgreen
-    title: 红绿纪律循环 + 引擎适配器接口（绿点分支/红即回滚/两败转研究/证据回传）
-    files: [superdev/redgreen.py, superdev/engines.py, tests/test_redgreen.py]
-    size: medium
-    research: [读 design/03-详细设计.md §1.1、§1.2、§1.3]
-    depends_on: [T01-ledger, T03-research]
-    status: draft
-
-  # ---- Wave C：外围设施 ----
-  - id: T07-cli-hooks
-    title: CLI 入口（check/status/round/import-spec）+ 管理端 hook 裁决脚本
-    files: [superdev_cli.py, superdev/hooks.py, tests/test_cli.py, tests/test_hooks.py]
-    size: medium
-    research: [读 design/03-详细设计.md §2、§8.1]
-    depends_on: [T04-check, T05-projection-state]
-    status: draft
-
-  - id: T08-supervise-guard
-    title: 督办（停滞计数/升级报告/恢复）与资源守护（超时杀进程/孤儿清理）
-    files: [superdev/supervise.py, superdev/guard.py, tests/test_supervise.py, tests/test_guard.py]
-    size: medium
-    research: [读 design/03-详细设计.md §3.3、§6]
-    depends_on: [T05-projection-state]
-    status: draft
-
-  - id: T09-web
-    title: 网页决策面（项目/任务/等你拍板 一键决策 POST→台账→事件）
-    files: [superdev/web.py, tests/test_web.py]
-    size: medium
-    research: [读 design/03-详细设计.md §5、§8.5]
-    depends_on: [T05-projection-state]
-    status: draft
-
-  # ---- Wave D：契约、端到端、收尾 ----
-  - id: T10-contracts
-    title: 管理端/工人契约文档（superdev-manage.md / superdev-work.md）+ import-spec spec-kit 适配
-    files: [commands/superdev-manage.md, commands/superdev-work.md, superdev/importspec.py, tests/test_importspec.py]
-    size: small
-    research: [读 design/03-详细设计.md §8.1 与 bigdev commands 风格]
-    depends_on: [T04-check]
-    status: draft
-
-  - id: T11-e2e
-    title: 端到端测试：假引擎跑通一个任务全生命周期（创建→派发→两红→研究→绿→合并→投影刷新）
-    files: [tests/test_e2e.py, tests/fake_engine.py]
-    size: medium
-    research: [读 design/02-架构设计.md 数据流一节]
-    depends_on: [T05-projection-state, T06-redgreen, T07-cli-hooks]
-    status: draft
-
-  - id: T12-readme
-    title: 仓库 README（十分钟跑通第一个任务全绿合并的快速上手）
-    files: [README.md]
-    size: small
-    research: [读 design/01-卖点.md 定位一节]
-    depends_on: [T11-e2e]
-    status: draft
-
-  - id: T13-cli-importspec
-    title: CLI 补 import-spec 子命令（T10 工人报告的集成缺口）
-    files: [superdev_cli.py, tests/test_cli.py]
-    size: small
-    research: [读 superdev/importspec.py 的 import_spec 签名]
-    depends_on: [T10-contracts]
-    status: draft
-
+- id: T01-ledger
+  title: 台账加载器（agent.yml / 派工计划.yml / status.yml 读写）
+  status: done
+  size: medium
+  files:
+  - superdev/ledger.py
+  - tests/test_ledger.py
+  - tests/fixtures/ledger/
+  research:
+  - 读 design/03-详细设计.md §4 与 README 术语表"台账"
+  depends_on: []
+- id: T02-events
+  title: 事件日志与防篡改哈希链（append-only + 链式签名 + 验证）
+  status: done
+  size: medium
+  files:
+  - superdev/events.py
+  - tests/test_events.py
+  research:
+  - 读 design/03-详细设计.md §8.3
+  depends_on: []
+- id: T03-research
+  title: 研究预算分档与模块知识库（trivial/small/medium/large + 灵过/踩坑注入）
+  status: done
+  size: medium
+  files:
+  - superdev/research.py
+  - tests/test_research.py
+  research:
+  - 读 design/03-详细设计.md §1.4 与 §8.8
+  depends_on: []
+- id: T04-check
+  title: 契约校验器 check（八项校验：数量/分组/依赖无环/就绪数/归属/边界/策略引用研究/复现脚本/预算分档）
+  status: done
+  size: medium
+  files:
+  - superdev/check.py
+  - tests/test_check.py
+  research:
+  - 读 design/03-详细设计.md §2
+  depends_on:
+  - T01-ledger
+- id: T05-projection-state
+  title: SQLite 投影五表 + 状态机迁移表 + 事件消费派发
+  status: done
+  size: large
+  files:
+  - superdev/projection.py
+  - superdev/state.py
+  - tests/test_projection.py
+  - tests/test_state.py
+  research:
+  - 读 design/03-详细设计.md §3、§4
+  depends_on:
+  - T01-ledger
+  - T02-events
+- id: T06-redgreen
+  title: 红绿纪律循环 + 引擎适配器接口（绿点分支/红即回滚/两败转研究/证据回传）
+  status: done
+  size: medium
+  files:
+  - superdev/redgreen.py
+  - superdev/engines.py
+  - tests/test_redgreen.py
+  research:
+  - 读 design/03-详细设计.md §1.1、§1.2、§1.3
+  depends_on:
+  - T01-ledger
+  - T03-research
+- id: T07-cli-hooks
+  title: CLI 入口（check/status/round/import-spec）+ 管理端 hook 裁决脚本
+  status: done
+  size: medium
+  files:
+  - superdev_cli.py
+  - superdev/hooks.py
+  - tests/test_cli.py
+  - tests/test_hooks.py
+  research:
+  - 读 design/03-详细设计.md §2、§8.1
+  depends_on:
+  - T04-check
+  - T05-projection-state
+- id: T08-supervise-guard
+  title: 督办（停滞计数/升级报告/恢复）与资源守护（超时杀进程/孤儿清理）
+  status: done
+  size: medium
+  files:
+  - superdev/supervise.py
+  - superdev/guard.py
+  - tests/test_supervise.py
+  - tests/test_guard.py
+  research:
+  - 读 design/03-详细设计.md §3.3、§6
+  depends_on:
+  - T05-projection-state
+- id: T09-web
+  title: 网页决策面（项目/任务/等你拍板 一键决策 POST→台账→事件）
+  status: done
+  size: medium
+  files:
+  - superdev/web.py
+  - tests/test_web.py
+  research:
+  - 读 design/03-详细设计.md §5、§8.5
+  depends_on:
+  - T05-projection-state
+- id: T10-contracts
+  title: 管理端/工人契约文档（superdev-manage.md / superdev-work.md）+ import-spec spec-kit 适配
+  status: done
+  size: small
+  files:
+  - commands/superdev-manage.md
+  - commands/superdev-work.md
+  - superdev/importspec.py
+  - tests/test_importspec.py
+  research:
+  - 读 design/03-详细设计.md §8.1 与 bigdev commands 风格
+  depends_on:
+  - T04-check
+- id: T11-e2e
+  title: 端到端测试：假引擎跑通一个任务全生命周期（创建→派发→两红→研究→绿→合并→投影刷新）
+  status: done
+  size: medium
+  files:
+  - tests/test_e2e.py
+  - tests/fake_engine.py
+  research:
+  - 读 design/02-架构设计.md 数据流一节
+  depends_on:
+  - T05-projection-state
+  - T06-redgreen
+  - T07-cli-hooks
+- id: T12-readme
+  title: 仓库 README（十分钟跑通第一个任务全绿合并的快速上手）
+  status: done
+  size: small
+  files:
+  - README.md
+  research:
+  - 读 design/01-卖点.md 定位一节
+  depends_on:
+  - T11-e2e
+- id: T13-cli-importspec
+  title: CLI 补 import-spec 子命令（T10 工人报告的集成缺口）
+  status: done
+  size: small
+  files:
+  - superdev_cli.py
+  - tests/test_cli.py
+  research:
+  - 读 superdev/importspec.py 的 import_spec 签名
+  depends_on:
+  - T10-contracts
+- id: T14-gate-pipeline
+  title: 质检管线（§8.2：每模块可配置 gate [lint,typecheck,test,build]，任一步红=回归红）
+  status: done
+  size: medium
+  files:
+  - superdev/gate.py
+  - tests/test_gate.py
+  research:
+  - 读 superdev/redgreen.py 的 runner 接口、design/03 §8.2
+  depends_on:
+  - T06-redgreen
+- id: T15-clarify-reviewer
+  title: 需求澄清步（§8.6）+ 评审工人（§8.7：diff 过 AI 评审再进门禁）
+  status: done
+  size: medium
+  files:
+  - superdev/clarify.py
+  - superdev/reviewer.py
+  - tests/test_clarify.py
+  - tests/test_reviewer.py
+  research:
+  - 读 design/03 §8.6 §8.7、superdev/engines.py 的 Engine 协议
+  depends_on:
+  - T06-redgreen
+- id: T16-ci-adapter
+  title: CI 适配器（§8.4：盯流水线结果，失败日志走红绿同路回喂）
+  status: done
+  size: small
+  files:
+  - superdev/ciadapter.py
+  - tests/test_ciadapter.py
+  research:
+  - 读 superdev/events.py 事件常量、design/03 §8.4
+  depends_on:
+  - T02-events
+- id: T17-kb-derive
+  title: 知识库自动提炼（§8.8 补：从回归事件提炼灵过/踩坑，研究一次全项目复用）
+  status: done
+  size: small
+  files:
+  - superdev/research.py
+  - tests/test_research.py
+  research:
+  - 读 superdev/research.py 现有 KnowledgeBase、superdev/projection.py 的 regression_events
+    表
+  depends_on:
+  - T03-research
+  - T05-projection-state

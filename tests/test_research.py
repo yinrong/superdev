@@ -2,13 +2,16 @@
 
 import pytest
 
+from superdev.projection import Projection
 from superdev.research import (
     Budget,
     KnowledgeBase,
     ResearchError,
     budget,
     can_research,
+    derive_from_events,
     strategy_cites,
+    sync_from_projection,
 )
 
 
@@ -149,3 +152,119 @@ class TestKnowledgeBase:
     def test_inject_unknown_size_raises(self, filled_kb):
         with pytest.raises(ResearchError):
             filled_kb.inject("giant")
+
+
+# ---- §8.8 知识库自动提炼 ------------------------------------------------
+
+LOG_ASSERT = "collected 5 items\nE       AssertionError: expected 3, got 2\n"
+LOG_IMPORT = "E       ImportError: cannot import name 'foo'\n"
+
+
+class TestDeriveFromEvents:
+    def _row(self, task, attempt, green, log=""):
+        return {"task_id": task, "attempt": attempt, "green": green, "log_tail": log}
+
+    def test_two_reds_then_green_yields_win(self):
+        rows = [
+            self._row("T1", 1, False, LOG_ASSERT),
+            self._row("T1", 2, False, LOG_ASSERT),
+            self._row("T1", 3, True, ""),
+        ]
+        assert derive_from_events(rows) == [
+            ("灵过", "曾两红后转绿：AssertionError",
+             "任务 T1 连红 2 次后转绿，先查同关键词错误再动手")
+        ]
+
+    def test_first_attempt_green_yields_first_green_path(self):
+        rows = [self._row("T2", 1, True, "")]
+        assert derive_from_events(rows) == [("灵过", "首绿路径", "T2 首轮即绿")]
+
+    def test_all_red_never_green_yields_pitfall(self):
+        rows = [
+            self._row("T3", 1, False, LOG_IMPORT),
+            self._row("T3", 2, False, LOG_IMPORT),
+        ]
+        assert derive_from_events(rows) == [
+            ("踩坑", "ImportError", "任务 T3 红 2 次未绿，勿重复此路")
+        ]
+
+    def test_one_red_then_green_yields_nothing(self):
+        # 一红后绿没有稳定模式，设计上不出记录
+        rows = [self._row("T4", 1, False, LOG_ASSERT), self._row("T4", 2, True, "")]
+        assert derive_from_events(rows) == []
+
+    def test_keyword_extraction_strips_pytest_prefix(self):
+        # E 前缀剥掉、取首个词、去尾部冒号 → ValueError
+        rows = [self._row("T5", 1, False, "E       ValueError: bad input\n")]
+        assert derive_from_events(rows) == [
+            ("踩坑", "ValueError", "任务 T5 红 1 次未绿，勿重复此路")
+        ]
+
+    def test_keyword_falls_back_to_first_nonempty_line(self):
+        rows = [self._row("T6", 1, False, "some random output line\n")]
+        assert derive_from_events(rows)[0][1] == "some"
+
+    def test_keyword_unknown_when_log_empty(self):
+        rows = [self._row("T7", 1, False, "")]
+        assert derive_from_events(rows)[0][1] == "未知错误"
+
+
+class TestSyncFromProjection:
+    @pytest.fixture()
+    def proj(self, tmp_path):
+        p = Projection(tmp_path / "proj.db")
+        yield p
+        p.close()
+
+    @staticmethod
+    def _add_task(p, task_id, project):
+        p.conn.execute(
+            "INSERT INTO tasks (task_id, project, status) VALUES (?, ?, 'ready')",
+            (task_id, project),
+        )
+        p.conn.commit()
+
+    def test_sync_writes_derived_records(self, tmp_path, proj):
+        self._add_task(proj, "T1", "demo")
+        proj.record_regression("T1", 1, False, "s1", LOG_ASSERT)
+        proj.record_regression("T1", 2, False, "s2", LOG_ASSERT)
+        proj.record_regression("T1", 3, True, "s3", "")
+        kb = KnowledgeBase(tmp_path / "kb.yaml")
+        assert sync_from_projection(kb, proj, "demo") == 1
+        assert kb.entries("灵过") == [
+            {"pattern": "曾两红后转绿：AssertionError",
+             "note": "任务 T1 连红 2 次后转绿，先查同关键词错误再动手"}
+        ]
+
+    def test_sync_twice_dedupes(self, tmp_path, proj):
+        self._add_task(proj, "T2", "demo")
+        proj.record_regression("T2", 1, True, "s1", "")
+        kb = KnowledgeBase(tmp_path / "kb.yaml")
+        assert sync_from_projection(kb, proj, "demo") == 1
+        assert sync_from_projection(kb, proj, "demo") == 0  # 重复 sync 全部去重
+
+    def test_sync_filters_by_project(self, tmp_path, proj):
+        self._add_task(proj, "T3", "demo")
+        self._add_task(proj, "T4", "other")
+        proj.record_regression("T3", 1, True, "s", "")
+        proj.record_regression("T4", 1, True, "s", "")
+        kb = KnowledgeBase(tmp_path / "kb.yaml")
+        assert sync_from_projection(kb, proj, "demo") == 1
+        assert kb.entries("灵过")[0]["note"] == "T3 首轮即绿"
+
+    def test_sync_ignores_events_without_task_row(self, tmp_path, proj):
+        # record_regression 允许任务不在 tasks 表；sync 靠 JOIN，这些事件不参与
+        proj.record_regression("T-ghost", 1, True, "s", "")
+        kb = KnowledgeBase(tmp_path / "kb.yaml")
+        assert sync_from_projection(kb, proj, "demo") == 0
+
+    def test_sync_mixed_records_count(self, tmp_path, proj):
+        self._add_task(proj, "T5", "demo")
+        self._add_task(proj, "T6", "demo")
+        proj.record_regression("T5", 1, True, "s", "")  # 首绿
+        proj.record_regression("T6", 1, False, "s", LOG_IMPORT)  # 纯红
+        proj.record_regression("T6", 2, False, "s", LOG_IMPORT)
+        kb = KnowledgeBase(tmp_path / "kb.yaml")
+        assert sync_from_projection(kb, proj, "demo") == 2
+        assert len(kb.entries("灵过")) == 1
+        assert len(kb.entries("踩坑")) == 1
