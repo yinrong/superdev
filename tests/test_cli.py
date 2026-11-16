@@ -1,4 +1,4 @@
-"""superdev_cli.py 的测试：四个子命令经 subprocess 真跑，验证输出与退出码。"""
+"""superdev_cli.py 的测试：各子命令经 subprocess 真跑，验证输出与退出码。"""
 import os
 import subprocess
 import sys
@@ -139,6 +139,47 @@ def test_verify_tampered_log_exits_one(tmp_path):
     r = run_cli("verify", log_path)
     assert r.returncode == 1
     assert "校验失败" in r.stdout
+
+
+# ---------- import-spec ----------
+
+def _spec_dir(tmp_path: Path, plan_text: str) -> Path:
+    spec = tmp_path / "feat"
+    spec.mkdir()
+    (spec / "plan.md").write_text(plan_text, encoding="utf-8")
+    return spec
+
+
+def test_import_spec_good_path_writes_plan_and_prints_warnings(tmp_path):
+    spec = _spec_dir(
+        tmp_path,
+        "- [ ] 改 README 错字\n"
+        "- [ ] 给台账加载器补一个按模块过滤任务列表的参数并写测试\n",
+    )
+    out = tmp_path / "feat-plan.yml"
+    r = run_cli("import-spec", spec, out)
+    assert r.returncode == 0
+    assert "导入完成：2 个任务" in r.stdout
+    # 2 个任务少于建议下限 10，check 警告要照打但退出码仍是 0
+    assert "check 警告 1 处" in r.stdout
+    assert "少于" in r.stdout
+    assert out.exists()
+
+
+def test_import_spec_over_limit_exits_one(tmp_path):
+    spec = _spec_dir(tmp_path, "".join(f"- [ ] 任务 {i}\n" for i in range(1, 5)))
+    r = run_cli("import-spec", spec, tmp_path / "plan.yml", "--max-tasks", "3")
+    assert r.returncode == 1
+    assert "先拆小再导入" in r.stderr
+    assert not (tmp_path / "plan.yml").exists()
+
+
+def test_import_spec_missing_list_exits_one(tmp_path):
+    empty = tmp_path / "empty-spec"
+    empty.mkdir()
+    r = run_cli("import-spec", empty, tmp_path / "plan.yml")
+    assert r.returncode == 1
+    assert "找不到 plan.md 或 tasks.md" in r.stderr
 
 
 # ---------- 入口 ----------

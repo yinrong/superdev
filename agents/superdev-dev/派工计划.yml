@@ -109,3 +109,12 @@ tasks:
     research: [读 design/01-卖点.md 定位一节]
     depends_on: [T11-e2e]
     status: draft
+
+  - id: T13-cli-importspec
+    title: CLI 补 import-spec 子命令（T10 工人报告的集成缺口）
+    files: [superdev_cli.py, tests/test_cli.py]
+    size: small
+    research: [读 superdev/importspec.py 的 import_spec 签名]
+    depends_on: [T10-contracts]
+    status: draft
+

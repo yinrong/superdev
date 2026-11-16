@@ -22,7 +22,7 @@ MAX_TASKS = 50
 
 # §2 引擎与工人归属：工人只准动模块仓的这几处，管理端只写台账
 _OWNED_PREFIXES = ("superdev/", "tests/", "commands/", "agents/")
-_OWNED_FILES = ("README.md",)
+_OWNED_FILES = ("README.md", "superdev_cli.py", "pytest.ini")  # 仓库根的入口与配置，验收时补录
 
 # 依赖已齐的状态：下游 ready 任务可立刻并行派发
 _DONE_STATUSES = frozenset({"done", "merged"})
@@ -140,7 +140,7 @@ def _check_files_owned(plan: Plan, add: _Add) -> None:
             if not owned:
                 add(
                     f"任务 {task.id} 的 files 越界：{path}"
-                    "（只允许 superdev/、tests/、commands/、agents/、README.md）"
+                    "（只允许 superdev/、tests/、commands/、agents/ 及仓库根的 README.md、superdev_cli.py、pytest.ini）"
                 )
 
 
