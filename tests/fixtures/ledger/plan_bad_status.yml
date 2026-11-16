@@ -1,0 +1,6 @@
+# 测试夹具：任务状态不在枚举内（statuses 头部缺省，回退 DEFAULT_STATUSES）
+project: demo
+tasks:
+  - id: T01
+    title: 状态拼错的任务
+    status: todo

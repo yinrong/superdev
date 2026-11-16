@@ -1,0 +1,6 @@
+# 测试夹具：任务缺 title（必填字段）
+project: demo
+statuses: [draft, ready]
+tasks:
+  - id: T01
+    status: draft

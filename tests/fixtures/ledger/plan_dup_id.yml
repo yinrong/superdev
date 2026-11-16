@@ -1,0 +1,14 @@
+# 测试夹具：两个任务同 id（加载应通过，validate_basic 应报重复）
+project: demo
+tasks:
+  - id: T01
+    title: 第一个 T01
+    status: draft
+
+  - id: T01
+    title: 重复的 T01
+    status: ready
+
+  - id: T02
+    title: 无辜的第三个
+    status: draft

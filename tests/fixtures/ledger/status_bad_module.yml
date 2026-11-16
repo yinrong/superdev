@@ -1,0 +1,4 @@
+# 测试夹具：模块缺 repo 字段
+project: demo
+modules:
+  - last_green: 3f2b1c0d5e6f7890abcdef1234567890abcdef12

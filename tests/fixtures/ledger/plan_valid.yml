@@ -1,0 +1,31 @@
+# 测试夹具：结构完整的有效派工计划（口径同 agents/superdev-dev/派工计划.yml）
+project: demo
+kind: 单仓软件
+modules:
+  - repo: D:\devs\dev4\demo
+    max_workers: 2
+    regression: python -m pytest -q
+version: v0.1.0
+statuses: [draft, ready, assigned, in_progress, evidence_wait, stuck, escalated, gating, merged, done]
+
+tasks:
+  - id: T01
+    title: 地基任务
+    files: [demo/a.py, tests/test_a.py]
+    size: small
+    research: [读 demo/a.py 现状]
+    depends_on: []
+    status: draft
+
+  - id: T02
+    title: 依赖地基的功能
+    files: [demo/b.py]
+    size: medium
+    research: []
+    depends_on: [T01]
+    status: ready
+
+  # 故意只给必填字段，验证 files/size/research/depends_on 的缺省值
+  - id: T03
+    title: 极简任务
+    status: ready

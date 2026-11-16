@@ -1,0 +1,12 @@
+# 测试夹具：自定义状态枚举——证明枚举以文件头 statuses 为准，
+# ready 在默认枚举里合法，但这里不在 [todo, doing, done] 中，必须判非法。
+project: demo
+statuses: [todo, doing, done]
+tasks:
+  - id: A1
+    title: 自定义枚举内合法
+    status: todo
+
+  - id: A2
+    title: 不在自定义枚举内
+    status: ready

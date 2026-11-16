@@ -1,0 +1,11 @@
+# 测试夹具：depends_on 引用了不存在的任务
+project: demo
+tasks:
+  - id: T01
+    title: 地基任务
+    status: draft
+
+  - id: T02
+    title: 依赖悬空
+    status: ready
+    depends_on: [T01, T99]
