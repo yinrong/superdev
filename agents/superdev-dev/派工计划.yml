@@ -219,3 +219,26 @@ tasks:
   depends_on:
   - T03-research
   - T05-projection-state
+- id: T18-bigdev-compat
+  title: 挂账：bigdev 存量台账兼容读入（设计§7 要求，本轮派工遗漏未做）
+  status: draft
+  size: small
+  files:
+  - superdev/ledger.py
+  - tests/test_ledger.py
+  research:
+  - 读 D:\devs\dev4\bigdev\agents 下真实台账样例
+  depends_on:
+  - T01-ledger
+- id: T19-ci-real-api
+  title: 挂账：CI 真实 API 轮询（GitHub Actions/GitLab CI，本轮只到注入点）
+  status: draft
+  size: medium
+  files:
+  - superdev/ciadapter.py
+  - tests/test_ciadapter.py
+  research:
+  - gh api actions/runs 与 GitLab pipelines API 文档
+  depends_on:
+  - T16-ci-adapter
+
