@@ -121,6 +121,14 @@ This repository was built by superdev itself, dogfooded end to end:
 - **8 green points**: every merge happened only after the full suite passed at a new high-water mark (59 → 143 → 223 → 239 → 310 → 342 tests)
 - The contract validator (`check`) rejected this repo's own ledger twice during development — once for a file-boundary violation, once for over-parallel dispatch. Both were fixed through the rules, not around them.
 
+## The decision board
+
+Stalled work surfaces as a structured decision — failure case, what was tried, cost — and one click resumes the task. The board below is this repo's own ledger mid-development:
+
+![superdev decision board](docs/assets/web-decision-board.png)
+
+*(demo data; serve your own with `DecisionWeb(...).serve(port=8765, block=True)`)*
+
 ## Documentation
 
 - [中文 README](README.zh-CN.md)

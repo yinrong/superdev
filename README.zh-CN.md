@@ -58,6 +58,14 @@ python superdev_cli.py check agents/superdev-dev/派工计划.yml
 - `agents/superdev-dev/`：自举台账，superdev 的开发自己也走这套流程
 - `design/`：[设计文档](design/README.md)
 
+## 决策看板
+
+卡住的工作变成一条结构化决策（失败用例、试过什么、花了多少），点一下就恢复任务。下图是本仓库自己开发中的台账：
+
+![superdev 决策看板](docs/assets/web-decision-board.png)
+
+*（演示数据；`DecisionWeb(...).serve(port=8765, block=True)` 起你自己的）*
+
 ## 自举证明
 
 本仓库由 superdev 自己建成：公开台账 21 个任务、14 名工人、8 个绿点（每次合入前全量测试必须创新高：59→143→223→239→310→342）；契约校验器开发期间两次拦下本仓库自己的台账（文件越界、超并发派发），都按规则修而不是绕过。
