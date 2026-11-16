@@ -7,10 +7,12 @@
 """
 from __future__ import annotations
 
+import hmac
 import html
 import json
 import sqlite3
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -79,11 +81,14 @@ class DecisionWeb:
         projection: Projection,
         event_log: EventLog,
         ledger_plan_path: str | Path,
+        auth_token: str | None = None,
     ):
         self.projection = projection
         self.event_log = event_log
         # 台账路径留给派发器写回用（expert_decided → 新策略写回台账），这里只持有
         self.ledger_plan_path = Path(ledger_plan_path)
+        # §5 第 3 点：远程访问加 token；None（默认）= 本机模式，行为完全不变
+        self.auth_token = auth_token
         self._db_lock = threading.Lock()
         self._swap_to_threadsafe_conn()
         self._server: ThreadingHTTPServer | None = None
@@ -154,6 +159,12 @@ class DecisionWeb:
             f"<pre>{html.escape((d['context_report'] or '')[:CONTEXT_PREVIEW])}</pre></div>"
             for d in pending
         )
+        # token 模式下把 token 藏进主页，方便前端拼 ?token= 链接（能过认证即可）
+        token_input = (
+            f'<input type="hidden" id="auth-token" value="{html.escape(self.auth_token)}">'
+            if self.auth_token
+            else ""
+        )
         return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -169,6 +180,7 @@ class DecisionWeb:
 <div class="bar"><div class="fill" style="width:{pct}%"></div></div>
 <div class="kanban">{''.join(columns)}</div>
 <h2>待拍板决策</h2>
+{token_input}
 {decisions_html or "<p>没有等待中的决策。</p>"}
 </body>
 </html>"""
@@ -183,7 +195,36 @@ class DecisionWeb:
             def log_message(self, format: str, *args: Any) -> None:
                 return
 
+            def _authorized(self) -> bool:
+                """token 模式下所有路由先验凭证（§5 第 3 点）；本机模式直接放行。
+
+                凭证二选一：Authorization: Bearer <token> 头，或 ?token=<token>
+                查询参数。compare_digest 防时序侧信道。不符返回 401 + 中文错误。
+                """
+                if web.auth_token is None:
+                    return True
+                candidates: list[str] = []
+                auth = self.headers.get("Authorization") or ""
+                if auth.startswith("Bearer "):
+                    candidates.append(auth[len("Bearer "):].strip())
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                candidates.extend(query.get("token", []))
+                for token in candidates:
+                    if token and hmac.compare_digest(token, web.auth_token):
+                        return True
+                self._send_json(
+                    401,
+                    {
+                        "ok": False,
+                        "error": "认证失败：token 缺失或不正确"
+                        "（Authorization: Bearer <token> 或 ?token=<token>）",
+                    },
+                )
+                return False
+
             def do_GET(self) -> None:
+                if not self._authorized():
+                    return
                 path = self.path.split("?", 1)[0]
                 if path == "/":
                     self._send(200, "text/html; charset=utf-8", web._render_home())
@@ -195,6 +236,8 @@ class DecisionWeb:
                     self._send_json(404, {"error": f"未知路径：{path}"})
 
             def do_POST(self) -> None:
+                if not self._authorized():
+                    return
                 path = self.path.split("?", 1)[0]
                 if path != "/decide":
                     self._send_json(404, {"error": f"未知路径：{path}"})

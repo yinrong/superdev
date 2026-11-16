@@ -86,5 +86,7 @@ def overload(snapshot: list[ProcessInfo], total_mem_mb: float) -> bool:
 
 
 def terminate(pid: int) -> None:
-    """真杀进程（taskkill /F）。只应在处置清单被人工确认后调用。"""
-    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+    """真杀进程树（taskkill /T /F，连子进程一起）。只应在处置清单被人工确认后调用。"""
+    subprocess.run(
+        ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
+    )

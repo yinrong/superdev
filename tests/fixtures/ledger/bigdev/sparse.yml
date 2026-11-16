@@ -1,0 +1,9 @@
+# 脱敏仿制的稀疏 bigdev 台账：只保留最小可识别字段（version/module/tasks 的 id/todo），
+# status 大量缺省、无 workers 无 objective，验证兼容读入不炸、缺省全部兜底
+version: v0.9_2026-01-01
+module: demo
+tasks:
+  - id: t-a
+    todo: demo/第一件事.md
+  - id: t-b
+    status: 待办

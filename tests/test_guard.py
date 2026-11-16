@@ -1,7 +1,10 @@
 """superdev.guard 的测试：tasklist 解析（样例 CSV 字符串喂入）、
-超限处置清单、10% 过载边界。terminate 只验证定义，绝不真调。"""
+超限处置清单、10% 过载边界。terminate 有两处：签名校验 + 一次性真杀
+（只杀测试自己起的子进程，finally 兜底防泄漏）。"""
 
 import inspect
+import subprocess
+import sys
 
 import pytest
 
@@ -116,3 +119,17 @@ class TestTerminate:
         assert callable(guard.terminate)
         params = inspect.signature(guard.terminate).parameters
         assert list(params) == ["pid"]
+
+    def test_real_kill_terminates_subprocess(self):
+        # 真杀安全测试：起一个睡 60 秒的子进程，terminate 后 10 秒内必须退出
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"]
+        )
+        try:
+            guard.terminate(proc.pid)
+            proc.wait(timeout=10)  # 超时未退出会抛 TimeoutExpired，测试即红
+            assert proc.returncode is not None  # 被杀退出，returncode 有值
+        finally:
+            if proc.poll() is None:  # 兜底防进程泄漏
+                proc.kill()
+                proc.wait(timeout=10)

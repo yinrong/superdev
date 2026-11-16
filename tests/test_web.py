@@ -42,22 +42,26 @@ tasks:
 """
 
 
-def _get(url: str) -> tuple[int, str, dict]:
+def _get(url: str, headers: dict | None = None) -> tuple[int, str, dict]:
+    req = urllib.request.Request(url, headers=headers or {})
     try:
-        with urllib.request.urlopen(url, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, resp.read().decode("utf-8"), dict(resp.headers)
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8"), dict(exc.headers)
 
 
-def _post(url: str, payload: dict | str) -> tuple[int, dict]:
+def _post(url: str, payload: dict | str, headers: dict | None = None) -> tuple[int, dict]:
     data = (
         payload.encode("utf-8")
         if isinstance(payload, str)
         else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     )
     req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=data,
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -82,6 +86,28 @@ def site(tmp_path):
     server = web.serve(port=0, block=False)
     yield SimpleNamespace(
         base=f"http://127.0.0.1:{server.server_address[1]}",
+        proj=proj,
+        log=log,
+        server=server,
+    )
+    server.shutdown()
+    server.server_close()
+    proj.close()
+
+
+@pytest.fixture()
+def secure_site(tmp_path):
+    """同 site，但 DecisionWeb 设了 auth_token（远程模式，§5 第 3 点）。"""
+    plan_path = tmp_path / "派工计划.yml"
+    plan_path.write_text(PLAN_YAML, encoding="utf-8")
+    proj = Projection(tmp_path / "proj.db")
+    proj.refresh_from_ledger(plan_path)
+    log = EventLog(tmp_path / "events.jsonl")
+    web = DecisionWeb(proj, log, plan_path, auth_token="s3cret-t0ken")
+    server = web.serve(port=0, block=False)
+    yield SimpleNamespace(
+        base=f"http://127.0.0.1:{server.server_address[1]}",
+        token="s3cret-t0ken",
         proj=proj,
         log=log,
         server=server,
@@ -268,3 +294,80 @@ def test_shutdown_releases_port(tmp_path):
     # 端口已释放：能再次绑定同一个端口
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", port))
+
+
+# ---- token 认证（§5 第 3 点：远程访问）----------------------------------
+
+
+def test_auth_missing_credentials_401(secure_site):
+    # 设了 token 后，裸请求任何路由都是 401 + 中文错误
+    for path in ("/", "/tasks", "/decisions"):
+        status, body, _ = _get(secure_site.base + path)
+        assert status == 401, path
+        assert "token" in body and "认证失败" in body
+
+
+def test_auth_wrong_token_401(secure_site):
+    status, body, _ = _get(
+        secure_site.base + "/tasks", headers={"Authorization": "Bearer wrong"}
+    )
+    assert status == 401
+    assert "认证失败" in body
+    status, body, _ = _get(secure_site.base + "/tasks?token=also-wrong")
+    assert status == 401
+    assert "认证失败" in body
+
+
+def test_auth_bearer_header_200(secure_site):
+    status, body, headers = _get(
+        secure_site.base + "/tasks", headers={"Authorization": f"Bearer {secure_site.token}"}
+    )
+    assert status == 200
+    assert "application/json" in headers.get("Content-Type", "")
+    assert "T01" in body
+
+
+def test_auth_query_param_200(secure_site):
+    status, body, _ = _get(secure_site.base + f"/?token={secure_site.token}")
+    assert status == 200
+    assert "待做" in body  # 主页正常渲染看板
+    # 隐藏 token 输入框在页面上（前端从简，能带出 token 即可）
+    assert f'value="{secure_site.token}"' in body
+
+
+def test_auth_post_decide_requires_token(secure_site):
+    secure_site.proj.add_decision("D1", "demo", "问", "c")
+    # 无凭证 POST → 401，且不落库不记事件
+    status, body = _post(secure_site.base + "/decide", {"decision_id": "D1", "choice": "换策略"})
+    assert status == 401
+    assert body["ok"] is False
+    assert len(secure_site.log) == 0
+    assert secure_site.proj.pending_decisions() != []
+    # 带对 token 的 POST 正常拍板
+    status, body = _post(
+        secure_site.base + "/decide",
+        {"decision_id": "D1", "choice": "换策略", "note": "ok"},
+        headers={"Authorization": f"Bearer {secure_site.token}"},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert len(secure_site.log) == 1
+
+
+def test_auth_token_in_html_is_escaped(tmp_path):
+    # token 含 HTML 特殊字符也要安全转义进隐藏输入框
+    plan_path = tmp_path / "派工计划.yml"
+    plan_path.write_text(PLAN_YAML, encoding="utf-8")
+    proj = Projection(tmp_path / "proj.db")
+    proj.refresh_from_ledger(plan_path)
+    web = DecisionWeb(
+        proj, EventLog(tmp_path / "events.jsonl"), plan_path, auth_token='a"b'
+    )
+    rendered = web._render_home()
+    assert 'value="a&quot;b"' in rendered
+
+
+def test_no_token_local_mode_allows_plain_requests(site):
+    # 不设 auth_token（默认）：无凭证请求照旧 200，本机模式行为不变
+    status, _, _ = _get(site.base + "/tasks")
+    assert status == 200

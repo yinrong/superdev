@@ -14,7 +14,7 @@ statuses:
 - done
 modules:
 - repo: D:\devs\dev4\superdev
-  max_workers: 3
+  max_workers: 4
   regression: python -m pytest -q
 tasks:
 - id: T01-ledger
@@ -220,25 +220,50 @@ tasks:
   - T03-research
   - T05-projection-state
 - id: T18-bigdev-compat
-  title: 挂账：bigdev 存量台账兼容读入（设计§7 要求，本轮派工遗漏未做）
-  status: draft
+  title: bigdev 存量台账兼容读入（设计§7：老格式原样读入，绿点首跑初始化）
+  status: done
   size: small
   files:
   - superdev/ledger.py
   - tests/test_ledger.py
+  - tests/fixtures/ledger/bigdev/
   research:
-  - 读 D:\devs\dev4\bigdev\agents 下真实台账样例
+  - 读 D:\devs\dev4\bigdev\agents 下真实台账样例（只读）
   depends_on:
   - T01-ledger
 - id: T19-ci-real-api
-  title: 挂账：CI 真实 API 轮询（GitHub Actions/GitLab CI，本轮只到注入点）
-  status: draft
+  title: CI 真实 API 轮询（GitHub Actions 与 GitLab CI 两个 Watch 实现，测试离线 mock）
+  status: done
   size: medium
   files:
   - superdev/ciadapter.py
   - tests/test_ciadapter.py
   research:
-  - gh api actions/runs 与 GitLab pipelines API 文档
+  - GitHub REST actions/runs 与 GitLab pipelines API 的响应字段
   depends_on:
   - T16-ci-adapter
-
+- id: T20-web-auth
+  title: 网页决策面 token 认证（设计§5.3：设 token 后所有路由要求 Bearer，默认本机模式不变）
+  status: done
+  size: small
+  files:
+  - superdev/web.py
+  - tests/test_web.py
+  research:
+  - 读 superdev/web.py 现有 handler 结构
+  depends_on:
+  - T09-web
+- id: T21-rough-edges
+  title: 收边：guard.terminate 真杀安全测试 + 督办报告复现命令从台账实取（去"待填"占位）+ README 边界更新
+  status: done
+  size: medium
+  files:
+  - superdev/guard.py
+  - superdev/supervise.py
+  - tests/test_guard.py
+  - tests/test_supervise.py
+  - README.md
+  research:
+  - 读 superdev/supervise.py 的 escalation_report、tests/test_guard.py 现有风格
+  depends_on:
+  - T08-supervise-guard

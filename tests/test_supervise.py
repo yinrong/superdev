@@ -7,6 +7,7 @@ import pytest
 
 from superdev import supervise
 from superdev.events import METRICS_STALL, EventLog
+from superdev.ledger import Task
 from superdev.projection import Projection
 
 PROJECT = "demo"
@@ -134,9 +135,11 @@ class TestEscalationReport:
         assert "F6" not in section and "F8" not in section
 
     def test_repro_command_placeholder(self, rich, log):
+        # 不传 tasks（旧调用方式）：复现命令给降级文案，不再"待填"
         report = supervise.escalation_report(rich, log, PROJECT)
         assert "复现命令" in report
-        assert "待填" in report
+        assert supervise.REPRO_FALLBACK in report
+        assert "待填" not in report
 
     def test_tried_directions_with_red_counts(self, rich, log):
         report = supervise.escalation_report(rich, log, PROJECT)
@@ -154,6 +157,53 @@ class TestEscalationReport:
         for kw in ("失败用例", "复现命令", "已试方向", "已耗成本", "建议选项"):
             assert kw in report
         assert "暂无" in report
+
+
+def _ltask(tid, status="in_progress", files=None, depends_on=None):
+    """测试用的台账 Task 对象。"""
+    return Task(
+        id=tid,
+        title=tid,
+        status=status,
+        files=list(files or []),
+        depends_on=list(depends_on or []),
+    )
+
+
+class TestReproCommand:
+    @pytest.fixture()
+    def stuck_proj(self, proj):
+        _task(proj, "T01", status="stuck")
+        _red(proj, "T01", "boom")
+        return proj
+
+    def test_repro_task_linked_by_depends_on(self, stuck_proj, log):
+        # stuck 任务的 depends_on 里挂着 repro: 微任务 → 取它的 files[0] 拼命令
+        tasks = [
+            _ltask("T01", status="stuck", depends_on=["repro:case-9"]),
+            _ltask("repro:case-9", files=["scripts/repro_case9.py"]),
+        ]
+        report = supervise.escalation_report(stuck_proj, log, PROJECT, tasks=tasks)
+        assert "python scripts/repro_case9.py" in report
+        assert "待补" not in report
+
+    def test_stuck_task_itself_is_repro(self, stuck_proj, log):
+        # stuck 任务自身就是 repro: 微任务 → 直接取自己的 files[0]
+        tasks = [_ltask("repro:case-1", status="stuck", files=["repro_case1.py"])]
+        report = supervise.escalation_report(stuck_proj, log, PROJECT, tasks=tasks)
+        assert "python repro_case1.py" in report
+
+    def test_no_repro_falls_back(self, stuck_proj, log):
+        # stuck 任务没有关联复现微任务 → 降级文案（与旧"待填"区分）
+        # 非 stuck 任务挂着 repro 依赖不算数
+        tasks = [
+            _ltask("T01", status="stuck"),
+            _ltask("T02", depends_on=["repro:case-2"]),
+            _ltask("repro:case-2", files=["r2.py"]),
+        ]
+        report = supervise.escalation_report(stuck_proj, log, PROJECT, tasks=tasks)
+        assert supervise.REPRO_FALLBACK in report
+        assert "python r2.py" not in report
 
 
 class TestMaybeEscalate:

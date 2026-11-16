@@ -13,8 +13,13 @@ poll_once 的事件记录与回喂决策全部复用，本地回归和远端 CI 
 
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from superdev.events import ALL_GREEN, ROUND_RED, EventLog
 from superdev.redgreen import tail_lines
@@ -25,6 +30,8 @@ __all__ = [
     "CI_FAILURE",
     "CIStatus",
     "CIAdapter",
+    "GithubCIWatch",
+    "GitlabCIWatch",
 ]
 
 CI_PENDING = "pending"
@@ -72,3 +79,103 @@ class CIAdapter:
         if state == CI_FAILURE:
             return VERDICT_FEEDBACK
         return VERDICT_WAIT
+
+
+# ---------- 真实 API 轮询 watch（详细设计 §8.4；离线测试 monkeypatch urlopen） ----------
+
+
+def _get_json(url: str, headers: dict[str, str]) -> Any:
+    """GET 一个 JSON 接口；HTTPError 原样抛给调用方归一为 failure。"""
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = resp.read().decode("utf-8")
+    return json.loads(body)
+
+
+class GithubCIWatch:
+    """GitHub Actions 轮询：取 branch 最新一条 workflow run 的 status/conclusion。
+
+    completed+success → success；completed+其他 → failure（log_tail 写
+    "run {id} conclusion={conclusion}"）；未 completed → pending；HTTPError →
+    failure 且 log_tail 写状态码。有 token 时带 Authorization: Bearer 头。
+    """
+
+    def __init__(
+        self,
+        repo: str,
+        branch: str,
+        token: str | None = None,
+        api_base: str = "https://api.github.com",
+    ):
+        self.repo = repo
+        self.branch = branch
+        self.token = token
+        self.api_base = api_base.rstrip("/")
+
+    def check(self) -> CIStatus:
+        url = (
+            f"{self.api_base}/repos/{self.repo}/actions/runs"
+            f"?branch={urllib.parse.quote(self.branch, safe='')}&per_page=1"
+        )
+        headers = {"Accept": "application/vnd.github+json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            data = _get_json(url, headers)
+        except urllib.error.HTTPError as e:
+            return CIStatus(CI_FAILURE, log_tail=f"GitHub API HTTP {e.code}: {url}")
+        runs = data.get("workflow_runs") or [] if isinstance(data, dict) else []
+        if not runs:
+            return CIStatus(CI_PENDING, log_tail=f"branch {self.branch} 没有 workflow run")
+        run = runs[0]
+        if run.get("status") != "completed":
+            return CIStatus(CI_PENDING, log_tail=f"run {run.get('id')} status={run.get('status')}")
+        conclusion = run.get("conclusion")
+        state = CI_SUCCESS if conclusion == "success" else CI_FAILURE
+        return CIStatus(state, log_tail=f"run {run.get('id')} conclusion={conclusion}")
+
+
+class GitlabCIWatch:
+    """GitLab CI 轮询：取 ref 最新一条 pipeline 的 status。
+
+    success → success；failed/canceled → failure；running/pending → pending
+    （其余未知状态按 pending 处理，log_tail 只写 pipeline 状态，不拉 jobs）；
+    HTTPError（如 404）→ failure 且 log_tail 写状态码。token 走 PRIVATE-TOKEN 头。
+    """
+
+    _FAILURE_STATES = frozenset({"failed", "canceled", "cancelled"})
+
+    def __init__(
+        self,
+        project_id: str | int,
+        ref: str,
+        base_url: str = "https://gitlab.com/api/v4",
+        token: str | None = None,
+    ):
+        self.project_id = project_id
+        self.ref = ref
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+
+    def check(self) -> CIStatus:
+        url = (
+            f"{self.base_url}/projects/{urllib.parse.quote(str(self.project_id), safe='')}"
+            f"/pipelines?ref={urllib.parse.quote(self.ref, safe='')}&per_page=1"
+        )
+        headers: dict[str, str] = {}
+        if self.token:
+            headers["PRIVATE-TOKEN"] = self.token
+        try:
+            pipelines = _get_json(url, headers)
+        except urllib.error.HTTPError as e:
+            return CIStatus(CI_FAILURE, log_tail=f"GitLab API HTTP {e.code}: {url}")
+        if not isinstance(pipelines, list) or not pipelines:
+            return CIStatus(CI_PENDING, log_tail=f"ref {self.ref} 没有 pipeline")
+        pipeline = pipelines[0]
+        state = str(pipeline.get("status") or "")
+        tail = f"pipeline {pipeline.get('id')} status={state}"
+        if state == "success":
+            return CIStatus(CI_SUCCESS, log_tail=tail)
+        if state in self._FAILURE_STATES:
+            return CIStatus(CI_FAILURE, log_tail=tail)
+        return CIStatus(CI_PENDING, log_tail=tail)

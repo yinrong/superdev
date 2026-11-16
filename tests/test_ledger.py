@@ -1,12 +1,15 @@
 """ledger.py 的测试：正常解析、缺字段、重复 id、坏依赖、坏状态、原子写。"""
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from superdev.ledger import (
     DEFAULT_STATUSES,
     LedgerError,
+    init_last_green,
+    load_bigdev_plan,
     load_plan,
     load_status,
     save_plan,
@@ -196,3 +199,96 @@ def test_load_status_top_level_not_mapping():
 def test_load_status_file_not_found():
     with pytest.raises(LedgerError, match="不存在"):
         load_status(FIX / "no_status.yml")
+
+
+# ---------- load_bigdev_plan（bigdev 存量台账兼容读入，详细设计 §7） ----------
+
+BIGDEV_FIX = FIX / "bigdev"
+
+
+def test_load_bigdev_plan_field_mapping():
+    plan = load_bigdev_plan(BIGDEV_FIX / "full.yml")
+    assert plan.project == "demo"                       # module → project
+    assert plan.version == "v2.0_2026-01-05"
+    assert plan.statuses == DEFAULT_STATUSES            # 状态枚举用 superdev 全集
+    t = plan.tasks[0]
+    assert (t.id, t.title, t.status) == ("demo-api-search", "搜索结果按页取数，断言语义不变。", "done")
+    assert t.files == [] and t.size == "medium" and t.research == []  # 缺省兜底
+    assert plan.tasks[2].depends_on == ["demo-api-search"]            # depends_on 保住
+
+
+def test_load_bigdev_plan_status_mapping():
+    by_id = {t.id: t.status for t in load_bigdev_plan(BIGDEV_FIX / "full.yml").tasks}
+    assert by_id["demo-api-search"] == "done"           # done → done
+    assert by_id["demo-ui-theme"] == "in_progress"      # 进行中 → in_progress
+    assert by_id["demo-api-export"] == "ready"          # 待办 → ready
+    assert by_id["demo-ui-legacy-cleanup"] == "draft"   # queued 无对应 → draft
+
+
+def test_load_bigdev_plan_compat_notes_record_ignored_fields():
+    notes = load_bigdev_plan(BIGDEV_FIX / "full.yml").compat_notes
+    text = "\n".join(notes)
+    assert "workers" in text                # bigdev worker 表没有 superdev 对应，要记账
+    assert "lifecycle" in text              # 任务级字段同样记账
+    assert any("draft" in n for n in notes)  # 无对应状态落 draft 也记账
+
+
+def test_load_bigdev_plan_sparse_fixture_no_crash():
+    plan = load_bigdev_plan(BIGDEV_FIX / "sparse.yml")
+    assert plan.project == "demo"
+    assert [t.id for t in plan.tasks] == ["t-a", "t-b"]
+    assert all(t.status in DEFAULT_STATUSES for t in plan.tasks)
+    assert all(t.size == "medium" for t in plan.tasks)
+    by_id = {t.id: t for t in plan.tasks}
+    assert by_id["t-a"].status == "draft"               # 缺 status → draft
+    assert by_id["t-b"].status == "ready"               # 待办 → ready
+    assert by_id["t-a"].title == "第一件事"              # 无 objective 用 todo 文件名兜底
+    assert by_id["t-b"].title == "t-b"                  # 连 todo 都没有用 id 兜底
+    assert validate_basic(plan) is None                 # 兜底结果直接可进基础校验
+
+
+def test_load_bigdev_plan_native_plan_keeps_compat_notes_empty():
+    # 原生台账路径不受兼容字段影响
+    assert load_plan(FIX / "plan_valid.yml").compat_notes == []
+
+
+# ---------- init_last_green（首跑初始化 status.yml，详细设计 §7） ----------
+
+
+def test_init_last_green_first_run_writes_git_head(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "superdev.ledger.subprocess.run",
+        lambda *a, **k: SimpleNamespace(stdout="abc123def456\n", returncode=0),
+    )
+    assert init_last_green(tmp_path) == "abc123def456"
+    status = load_status(tmp_path / "status.yml")
+    assert status["project"] == tmp_path.name
+    assert status["modules"][0]["last_green"] == "abc123def456"
+
+
+def test_init_last_green_no_git_falls_back_unverified(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError("没有 git")
+
+    monkeypatch.setattr("superdev.ledger.subprocess.run", boom)
+    assert init_last_green(tmp_path) == "unverified"
+    assert load_status(tmp_path / "status.yml")["modules"][0]["last_green"] == "unverified"
+
+
+def test_init_last_green_second_run_does_not_overwrite(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_git(*a, **k):
+        calls.append(a)
+        return SimpleNamespace(stdout="1" * 40 + "\n", returncode=0)
+
+    monkeypatch.setattr("superdev.ledger.subprocess.run", fake_git)
+    assert init_last_green(tmp_path) == "1" * 40
+
+    monkeypatch.setattr(
+        "superdev.ledger.subprocess.run",
+        lambda *a, **k: SimpleNamespace(stdout="2" * 40 + "\n", returncode=0),
+    )
+    assert init_last_green(tmp_path) == "1" * 40          # 返回旧值
+    assert len(calls) == 1                                # 二跑不再碰 git
+    assert load_status(tmp_path / "status.yml")["modules"][0]["last_green"] == "1" * 40

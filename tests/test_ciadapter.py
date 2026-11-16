@@ -1,10 +1,13 @@
 """superdev.ciadapter 的测试：三态轮询、事件 payload、同状态不重复记事件。
 
-watch 全部用假回调注入，不做任何真实 HTTP。
+watch 全部用假回调注入，不做任何真实 HTTP；GithubCIWatch/GitlabCIWatch 的
+用例同样 monkeypatch urllib.request.urlopen 喂假 JSON，全程离线。
 """
 
 from __future__ import annotations
 
+import json
+import urllib.error
 from dataclasses import dataclass, field
 
 from superdev.ciadapter import (
@@ -13,6 +16,8 @@ from superdev.ciadapter import (
     CI_SUCCESS,
     CIAdapter,
     CIStatus,
+    GithubCIWatch,
+    GitlabCIWatch,
 )
 from superdev.events import ALL_GREEN, ROUND_RED, EventLog
 
@@ -130,3 +135,170 @@ def test_different_mr_urls_record_independently(tmp_path):
     events = log.events()
     assert [e["kind"] for e in events] == [ALL_GREEN, ALL_GREEN]
     assert [e["payload"]["mr_url"] for e in events] == [MR_URL, other_url]
+
+
+# ---------- 真实 API watch（monkeypatch urlopen，全程离线） ----------
+
+
+class _FakeResponse:
+    """假 HTTP 响应：只实现 urlopen 结果用到的 read + 上下文管理。"""
+
+    def __init__(self, payload):
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _install_urlopen(monkeypatch, payload=None, error=None, captured=None):
+    def fake(req, timeout=None):
+        if captured is not None:
+            captured.append(req)
+        if error is not None:
+            raise error
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr("superdev.ciadapter.urllib.request.urlopen", fake)
+
+
+def _header(req, name) -> str | None:
+    # urllib 会把 header 键做 capitalize 处理，断言按大小写无关取
+    for k, v in req.headers.items():
+        if k.lower() == name.lower():
+            return v
+    return None
+
+
+def _gh_runs(run_id, status, conclusion=None):
+    return {"workflow_runs": [{"id": run_id, "status": status, "conclusion": conclusion}]}
+
+
+def _gl_pipeline(pipeline_id, status):
+    return [{"id": pipeline_id, "status": status}]
+
+
+# ---------- GithubCIWatch ----------
+
+
+def test_github_completed_success(monkeypatch):
+    _install_urlopen(monkeypatch, payload=_gh_runs(101, "completed", "success"))
+    result = GithubCIWatch("owner/repo", "main").check()
+    assert result.state == CI_SUCCESS
+    assert "conclusion=success" in result.log_tail
+
+
+def test_github_completed_other_conclusion_is_failure(monkeypatch):
+    _install_urlopen(monkeypatch, payload=_gh_runs(4242, "completed", "failure"))
+    result = GithubCIWatch("owner/repo", "main").check()
+    assert result.state == CI_FAILURE
+    assert result.log_tail == "run 4242 conclusion=failure"
+
+
+def test_github_not_completed_is_pending(monkeypatch):
+    _install_urlopen(monkeypatch, payload=_gh_runs(102, "in_progress"))
+    result = GithubCIWatch("owner/repo", "main", api_base="https://gh.example.com/api/v3").check()
+    assert result.state == CI_PENDING
+    assert "in_progress" in result.log_tail
+
+
+def test_github_token_sends_bearer_header_and_full_url(monkeypatch):
+    captured = []
+    _install_urlopen(monkeypatch, payload=_gh_runs(103, "completed", "success"), captured=captured)
+    GithubCIWatch("owner/repo", "feat/x", token="tok123").check()
+    (req,) = captured
+    assert _header(req, "Authorization") == "Bearer tok123"
+    assert req.full_url == (
+        "https://api.github.com/repos/owner/repo/actions/runs?branch=feat%2Fx&per_page=1"
+    )
+
+
+def test_github_without_token_sends_no_auth_header(monkeypatch):
+    captured = []
+    _install_urlopen(monkeypatch, payload=_gh_runs(104, "completed", "success"), captured=captured)
+    GithubCIWatch("owner/repo", "main").check()
+    assert _header(captured[0], "Authorization") is None
+
+
+def test_github_http_error_is_failure_with_status_code(monkeypatch):
+    err = urllib.error.HTTPError("https://api.github.com/x", 500, "boom", None, None)
+    _install_urlopen(monkeypatch, error=err)
+    result = GithubCIWatch("owner/repo", "main").check()
+    assert result.state == CI_FAILURE
+    assert "500" in result.log_tail
+
+
+# ---------- GitlabCIWatch ----------
+
+
+def test_gitlab_success(monkeypatch):
+    _install_urlopen(monkeypatch, payload=_gl_pipeline(9, "success"))
+    result = GitlabCIWatch(123, "main").check()
+    assert result.state == CI_SUCCESS
+    assert result.log_tail == "pipeline 9 status=success"
+
+
+def test_gitlab_failed_states_are_failure(monkeypatch):
+    for state in ("failed", "canceled"):
+        _install_urlopen(monkeypatch, payload=_gl_pipeline(10, state))
+        result = GitlabCIWatch(123, "main").check()
+        assert result.state == CI_FAILURE, state
+        assert f"status={state}" in result.log_tail
+
+
+def test_gitlab_running_and_pending_are_pending(monkeypatch):
+    for state in ("running", "pending"):
+        _install_urlopen(monkeypatch, payload=_gl_pipeline(11, state))
+        result = GitlabCIWatch(123, "main").check()
+        assert result.state == CI_PENDING, state
+
+
+def test_gitlab_404_is_failure(monkeypatch):
+    err = urllib.error.HTTPError("https://gitlab.example.com/api/v4/x", 404, "missing", None, None)
+    _install_urlopen(monkeypatch, error=err)
+    result = GitlabCIWatch(
+        "group/proj", "main", base_url="https://gitlab.example.com/api/v4", token="gltok"
+    ).check()
+    assert result.state == CI_FAILURE
+    assert "404" in result.log_tail
+
+
+def test_gitlab_token_sends_private_token_header(monkeypatch):
+    captured = []
+    _install_urlopen(monkeypatch, payload=_gl_pipeline(12, "success"), captured=captured)
+    GitlabCIWatch(123, "main", token="gltok").check()
+    (req,) = captured
+    assert _header(req, "PRIVATE-TOKEN") == "gltok"
+    assert req.full_url == "https://gitlab.com/api/v4/projects/123/pipelines?ref=main&per_page=1"
+
+
+# ---------- 两个 Watch 接进 CIAdapter.poll_once 走通 ----------
+
+
+def test_adapter_with_github_watch_success_records_all_green(monkeypatch, tmp_path):
+    _install_urlopen(monkeypatch, payload=_gh_runs(201, "completed", "success"))
+    log = _log(tmp_path)
+    adapter = CIAdapter(GithubCIWatch("owner/repo", "main").check)
+
+    assert adapter.poll_once(MR_URL, log) == "绿"
+
+    events = log.events()
+    assert [e["kind"] for e in events] == [ALL_GREEN]
+    assert events[0]["payload"]["mr_url"] == MR_URL
+
+
+def test_adapter_with_gitlab_watch_failure_records_round_red(monkeypatch, tmp_path):
+    _install_urlopen(monkeypatch, payload=_gl_pipeline(301, "failed"))
+    log = _log(tmp_path)
+    adapter = CIAdapter(GitlabCIWatch(123, "main").check)
+
+    assert adapter.poll_once(MR_URL, log) == "回喂"
+
+    events = log.events()
+    assert [e["kind"] for e in events] == [ROUND_RED]
+    assert "pipeline 301 status=failed" in events[0]["payload"]["log_tail"]

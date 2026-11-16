@@ -12,7 +12,7 @@ from typing import Any
 
 from superdev.events import METRICS_STALL
 
-REPRO_PLACEHOLDER = "待填（从台账派工计划读取）"
+REPRO_FALLBACK = "待补：该任务无关联复现微任务"
 OPTIONS = ("换策略", "拆微任务", "换引擎", "放弃")
 
 
@@ -139,9 +139,40 @@ def _cost_section(projection: Any, project: str) -> str:
     return text
 
 
-def escalation_report(projection: Any, event_log: Any, project: str) -> str:
+def _repro_command(tasks: list | None) -> str:
+    """从任务列表里找 stuck 任务关联的复现微任务，拼 `python <脚本>`。
+
+    关联规则（design §1.1 第 5 条）：stuck 任务自身就是 repro: 前缀的微任务，
+    或它的 depends_on 里引用了 repro: 任务。找到取 repro 任务 files[0] 拼命令；
+    没传 tasks、或找不到关联，返回降级文案（区别于旧的"待填"占位）。
+    """
+    if not tasks:
+        return REPRO_FALLBACK
+    by_id = {str(t.id): t for t in tasks if getattr(t, "id", None)}
+    for task in tasks:
+        if getattr(task, "status", None) != "stuck":
+            continue
+        repro = task if str(task.id).startswith("repro:") else None
+        if repro is None:
+            for dep in getattr(task, "depends_on", None) or []:
+                if str(dep).startswith("repro:") and str(dep) in by_id:
+                    repro = by_id[str(dep)]
+                    break
+        files = getattr(repro, "files", None) or []
+        if repro is not None and files:
+            return f"python {files[0]}"
+    return REPRO_FALLBACK
+
+
+def escalation_report(
+    projection: Any, event_log: Any, project: str, tasks: list | None = None
+) -> str:
     """拼五要素升级报告（design §6）：失败用例、复现命令、已试方向、
-    已耗成本、建议选项。给网页决策面"等你拍板"直接展示。"""
+    已耗成本、建议选项。给网页决策面"等你拍板"直接展示。
+
+    tasks 传派工计划的任务对象列表时，复现命令从 stuck 任务关联的
+    repro: 微任务实取；不传则降级文案占位（旧调用兼容）。
+    """
     stalls = sum(
         1
         for e in event_log.events()
@@ -150,7 +181,7 @@ def escalation_report(projection: Any, event_log: Any, project: str) -> str:
     sections = [
         f"【升级报告】项目 {project}（指标停滞 {stalls} 次）",
         "一、失败用例\n" + _failed_case_section(projection, project),
-        "二、复现命令\n" + REPRO_PLACEHOLDER,
+        "二、复现命令\n" + _repro_command(tasks),
         "三、已试方向\n" + _tried_directions_section(projection, project),
         "四、已耗成本\n" + _cost_section(projection, project),
         "五、建议选项\n" + " / ".join(OPTIONS),

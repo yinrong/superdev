@@ -25,10 +25,14 @@
 | redgreen | 红绿循环纪律：从绿点（全绿提交）开工、红即回滚、两败先研究 |
 | research | 研究纪律：预算分档、引用校验、模块知识库 |
 | supervise | 督办：停滞判定、五要素升级报告、自动恢复 |
-| guard | 资源守护：进程快照、超限处置 |
+| guard | 资源守护：进程快照、超限处置、确认后真杀 |
 | hooks | 管理端 hook 裁决，四个纯函数 |
 | engines | 工人引擎与回归协议，可插拔 |
-| web | 网页决策面：看板 + 一键拍板 |
+| gate | 质检管线：lint/typecheck/test/build 多步门禁 |
+| reviewer | 评审工人：门禁前的第二双眼 |
+| ciadapter | CI Watch：盯合并请求后的远端流水线，失败回喂工人 |
+| clarify | 需求澄清：拆任务前一次一问附选项 |
+| web | 网页决策面：看板 + 一键拍板 + token 认证 |
 | importspec | spec-kit 清单转派工计划 |
 
 - `commands/`：两份契约，superdev-manage.md（管理端）和 superdev-work.md（工人）
@@ -37,9 +41,11 @@
 
 ## 当前状态
 
-v0.1 核心闭环已通：台账入库、红绿循环、督办升级、网页拍板，端到端有测试兜底（tests/test_e2e.py），全量 239 个测试全绿。
+v0.1 核心闭环已通：台账入库、红绿循环、督办升级、网页拍板，端到端有测试兜底（tests/test_e2e.py），全量 310+ 个测试全绿。
 
-事件日志带哈希链，`python superdev_cli.py verify <events.jsonl 路径>` 可离线验真。
+CI Watch 已加（ciadapter）：合并请求后盯远端流水线，失败走本地同一条回喂路；CI 与 bigdev 兼容细节见台账 T18/T19。
+
+网页决策面支持 token 远程访问：`DecisionWeb(..., auth_token="随机串")` 后，请求须带 `Authorization: Bearer <token>` 头或 `?token=` 参数，否则 401；不设 token 仍是免认证的本机模式。
 
 网页决策面这样起（先跑过一轮 round 刷新投影，用法同 tests/test_web.py）：
 
@@ -49,4 +55,4 @@ v0.1 核心闭环已通：台账入库、红绿循环、督办升级、网页拍
 
 ## 边界
 
-CI 失败回喂和云看板还没做，编辑引擎与云托管运营挂账。详见 [design/05 吸收清单](design/05-竞品对比.md)。
+云同步看板（多人协作）按设计排到非首期；编辑引擎与云托管运营挂账。详见 [design/05 吸收清单](design/05-竞品对比.md)。

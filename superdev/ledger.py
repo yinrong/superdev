@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -84,6 +85,9 @@ class Plan:
     statuses: list[str] = field(default_factory=lambda: list(DEFAULT_STATUSES))
     modules: list[dict] = field(default_factory=list)
     tasks: list[Task] = field(default_factory=list)
+    # bigdev 存量台账兼容读入时记录忽略了哪些字段（load_plan 正常路径恒为空，
+    # 不参与 to_dict 落盘，所以原生台账的往返不吃这个字段）
+    compat_notes: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict) -> "Plan":
@@ -232,3 +236,139 @@ def validate_basic(plan: Plan) -> None:
             "台账基础校验失败，共 "
             f"{len(problems)} 处问题：\n" + "\n".join(f"- {p}" for p in problems)
         )
+
+
+# ---------- bigdev 存量台账兼容读入（详细设计 §7 迁移兼容） ----------
+
+# bigdev 老状态枚举 → superdev 最接近的状态；不在表内的落 draft 并记 compat note
+_BIGDEV_STATUS_MAP = {
+    "done": "done",
+    "进行中": "in_progress",
+    "待办": "ready",
+}
+_BIGDEV_DEFAULT_SIZE = "medium"
+# bigdev 顶层里 superdev 有对应物（或直接透传）的键；其余整键忽略并记账
+_BIGDEV_TOP_KNOWN = {"version", "module", "kind", "statuses", "modules", "tasks"}
+# bigdev 任务里 superdev 有对应物的键（objective/todo 用作 title 兜底）；
+# group/client/worker/lifecycle/evidence/attempts/failure_class 等均无对应，记账后丢弃
+_BIGDEV_TASK_KNOWN = {"id", "objective", "todo", "status", "depends_on", "files", "size", "research"}
+
+
+def load_bigdev_plan(path: Path | str) -> Plan:
+    """把 bigdev 老格式派工计划读成 superdev Plan（只读兼容，不改原文件）。
+
+    老格式按真实台账字段（module/workers/tasks：id、todo、objective、status…）
+    映射：缺 files/research → 空、缺 size → medium；老状态枚举映射
+    done→done、进行中→in_progress、待办→ready，其余（如 queued/blocked/缺省）→draft。
+    认不出的字段忽略，逐类记进 Plan.compat_notes，迁移时管理端可查丢了什么。
+    """
+    raw = _read_yaml_mapping(path, "bigdev 派工计划文件")
+    notes: list[str] = []
+
+    project = str(raw.get("module") or "").strip()
+    if not project:
+        project = Path(path).stem
+        notes.append(f"缺少 module 字段，project 用文件名兜底：{project}")
+
+    raw_tasks = raw.get("tasks")
+    if not isinstance(raw_tasks, list):
+        raise LedgerError(f"bigdev 派工计划缺少任务列表 tasks：{path}")
+
+    tasks: list[Task] = []
+    ignored_task_fields: set[str] = set()
+    defaulted_tasks = 0
+    unmapped_statuses: list[str] = []
+    for i, t in enumerate(raw_tasks, start=1):
+        if not isinstance(t, dict) or not t.get("id"):
+            raise LedgerError(f"bigdev 派工计划第 {i} 个任务缺少必填字段 id：{path}")
+        raw_status = str(t.get("status") or "").strip()
+        status = _BIGDEV_STATUS_MAP.get(raw_status)
+        if status is None:
+            status = "draft"
+            unmapped_statuses.append(f"{t['id']}:'{raw_status or '缺省'}'")
+        objective = str(t.get("objective") or "").strip()
+        todo = str(t.get("todo") or "").strip()
+        title = objective or (Path(todo).stem if todo else "") or str(t["id"])
+        depends = t.get("depends_on")
+        if not isinstance(depends, list):
+            depends = []
+        files = t.get("files") if isinstance(t.get("files"), list) else []
+        research = t.get("research") if isinstance(t.get("research"), list) else []
+        size = str(t.get("size") or "").strip() or _BIGDEV_DEFAULT_SIZE
+        if not (isinstance(t.get("files"), list) and t.get("size") and isinstance(t.get("research"), list)):
+            defaulted_tasks += 1
+        tasks.append(
+            Task(
+                id=str(t["id"]),
+                title=title,
+                status=status,
+                files=list(files or []),
+                size=size,
+                research=list(research or []),
+                depends_on=[str(d) for d in depends],
+            )
+        )
+        ignored_task_fields.update(str(k) for k in t if k not in _BIGDEV_TASK_KNOWN)
+
+    ignored_top = sorted(str(k) for k in raw if k not in _BIGDEV_TOP_KNOWN)
+    if ignored_top:
+        notes.append(f"忽略顶层字段：{'、'.join(ignored_top)}")
+    if ignored_task_fields:
+        notes.append(f"忽略任务字段：{'、'.join(sorted(ignored_task_fields))}")
+    if defaulted_tasks:
+        notes.append(
+            f"{defaulted_tasks} 个任务缺 files/size/research，按 superdev 缺省补齐（size=medium）"
+        )
+    if unmapped_statuses:
+        notes.append(f"任务状态无直接对应，落为 draft：{'、'.join(unmapped_statuses)}")
+
+    modules = [m for m in (raw.get("modules") or []) if isinstance(m, dict)]
+    plan = Plan(
+        project=project,
+        kind=str(raw.get("kind") or ""),
+        version=str(raw.get("version") or ""),
+        statuses=list(DEFAULT_STATUSES),
+        modules=modules,
+        tasks=tasks,
+    )
+    plan.compat_notes = notes
+    return plan
+
+
+def _git_head(project_dir: Path) -> str | None:
+    """取项目目录当前 git HEAD sha；目录不是 git 仓或 git 不可用时返回 None。"""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout.strip() or None
+
+
+def init_last_green(project_dir: Path | str) -> str:
+    """首跑初始化（详细设计 §7）：项目目录还没有 status.yml 时写入初始绿点。
+
+    last_green 取项目目录当前 git HEAD，拿不到写 "unverified"；
+    已有 status.yml 一律不动（二跑不覆盖），返回文件里第一个模块的 last_green。
+    """
+    project_dir = Path(project_dir)
+    status_path = project_dir / "status.yml"
+    if status_path.exists():
+        data = load_status(status_path)
+        modules = data.get("modules") or []
+        first = modules[0].get("last_green") if modules else None
+        return str(first) if first else "unverified"
+    last_green = _git_head(project_dir) or "unverified"
+    payload = {
+        "project": project_dir.name,
+        "modules": [{"repo": str(project_dir), "last_green": last_green}],
+        "metrics": [],
+    }
+    text = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    _atomic_write(status_path, text)
+    return last_green
