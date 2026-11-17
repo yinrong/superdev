@@ -110,7 +110,17 @@ def overload(snapshot: list[ProcessInfo], total_mem_mb: float) -> bool:
 
 
 def terminate(pid: int) -> None:
-    """真杀进程树（taskkill /T /F，连子进程一起）。只应在处置清单被人工确认后调用。"""
-    subprocess.run(
-        ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
-    )
+    """真杀进程树。Windows 用 taskkill /T /F（连子进程），POSIX 用 kill（进程组由调用方负责）。只应在处置清单被人工确认后调用。"""
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
+        )
+    else:
+        import signal
+
+        try:
+            import os
+
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
