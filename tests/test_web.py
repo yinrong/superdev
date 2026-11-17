@@ -291,8 +291,11 @@ def test_shutdown_releases_port(tmp_path):
     server.shutdown()
     server.server_close()
     proj.close()
-    # 端口已释放：能再次绑定同一个端口
+    # 端口已释放：能再次绑定同一个端口。
+    # 按真实服务器的标准设 SO_REUSEADDR——TIME_WAIT 残留不算占用（Linux），
+    # 但若 server 真没关死（活跃监听仍在），bind 依旧会失败，回归仍被抓到。
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("127.0.0.1", port))
 
 
