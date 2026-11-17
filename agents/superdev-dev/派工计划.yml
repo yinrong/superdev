@@ -267,3 +267,11 @@ tasks:
   - 读 superdev/supervise.py 的 escalation_report、tests/test_guard.py 现有风格
   depends_on:
   - T08-supervise-guard
+- id: T22-publish
+  title: 发布到 github.com/yinrong/superdev（浏览器建仓+PAT+推送+API 门面+CI 三轮修红至全绿）
+  status: done
+  size: medium
+  files:
+  - README.md
+  research: []
+  depends_on: []
