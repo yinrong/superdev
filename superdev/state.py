@@ -1,24 +1,26 @@
-"""任务状态机：迁移表、合法性判断、事件到迁移的映射。
+"""Task state machine: transition table, legality checks, and event-to-transition mapping.
 
-设计出处：design/03-详细设计.md §3——迁移表由程序持有，AI 只能提案，
-任何状态变更都要先过 can_transition/illegal 这一关。
-paused 不在台账 statuses 枚举里，是运行期叠加态：暂停时记下原状态，
-恢复时迁回原状态，所以 paused 可以去往任何基态。
-事件 kind 沿用 events.py 常量（round_red_1/2 已合并为 ROUND_RED，
-两败卡住另发 TASK_STUCK，口径见 events.py 模块注释）。
+Design source: design/03-detailed-design.md §3 — the transition table is owned by
+the program; the AI can only propose. Every status change must first pass
+the can_transition/illegal gate. "paused" is not one of the ledger's
+statuses: it is a runtime overlay — pausing records the original status
+and resuming transitions back to it, so paused may go to any base status.
+Event kinds reuse the events.py constants (round_red_1/2 merged into
+ROUND_RED; a two-failure stall is a separate TASK_STUCK, see the events.py
+module docstring).
 """
 from __future__ import annotations
 
 from superdev import events as ev
 
-# 基态 = 台账 statuses 的十个值；paused 是运行期叠加态，见模块注释
+# Base statuses = the ten ledger status values; paused is a runtime overlay, see module docstring
 BASE_STATUSES = [
     "draft", "ready", "assigned", "in_progress", "evidence_wait",
     "stuck", "escalated", "gating", "merged", "done",
 ]
 ALL_STATUSES = BASE_STATUSES + ["paused"]
 
-# §3.1 状态图的完整迁移表；paused 行的含义是"恢复到原状态"
+# Complete transition table of the §3.1 state diagram; the paused row means "resume to the original status"
 ALLOWED: dict[str, set[str]] = {
     "draft": {"ready", "paused"},
     "ready": {"assigned", "paused"},
@@ -35,51 +37,54 @@ ALLOWED: dict[str, set[str]] = {
 
 
 def can_transition(cur: str, nxt: str) -> bool:
-    """cur 是否允许直接迁移到 nxt。未知状态一律不允许。"""
+    """Whether cur may transition directly to nxt. Unknown statuses are never allowed."""
     return nxt in ALLOWED.get(cur, set())
 
 
 def illegal(cur: str, nxt: str) -> str | None:
-    """返回迁移不合法的中文原因；合法返回 None。"""
+    """Return the reason the transition is illegal, or None if it is legal."""
     if cur not in ALLOWED:
-        return f"未知状态 '{cur}'，合法状态为：{'、'.join(ALL_STATUSES)}"
+        return f"Unknown status '{cur}', valid statuses: {', '.join(ALL_STATUSES)}"
     if nxt not in ALLOWED:
-        return f"未知状态 '{nxt}'，合法状态为：{'、'.join(ALL_STATUSES)}"
+        return f"Unknown status '{nxt}', valid statuses: {', '.join(ALL_STATUSES)}"
     if nxt not in ALLOWED[cur]:
-        targets = "、".join(sorted(ALLOWED[cur]))
-        return f"不允许从 {cur} 迁移到 {nxt}（{cur} 的合法目标：{targets}）"
+        targets = ", ".join(sorted(ALLOWED[cur]))
+        return f"Transition from {cur} to {nxt} is not allowed (valid targets from {cur}: {targets})"
     return None
 
 
-# §3.2 迁移触发表：kind -> (要求的当前状态, 目标状态, 触发动作)
-# ROUND_RED 特殊：第一败/回滚都不迁移（from == to），两败由 TASK_STUCK 走 stuck
+# §3.2 transition trigger table: kind -> (required current status, target status, trigger action)
+# ROUND_RED is special: first failure / rollback does not transition (from == to);
+# a two-failure stall goes to stuck via TASK_STUCK
 EVENT_RULES: dict[str, tuple[str, str, str]] = {
-    ev.TASK_CREATED: ("draft", "ready", "检查通过后刷新投影"),
-    ev.WORKER_IDLE: ("ready", "assigned", "派发器派工"),
-    ev.ROUND_GREEN: ("in_progress", "evidence_wait", "收证据，通知门禁"),
-    ev.ROUND_RED: ("in_progress", "in_progress", "回滚回喂"),
-    ev.TASK_STUCK: ("in_progress", "stuck", "触发事后研究"),
-    ev.REPRO_SPLIT: ("stuck", "ready", "生成复现脚本契约"),
-    ev.EXPERT_DECIDED: ("escalated", "ready", "新策略写回台账"),
-    ev.ALL_GREEN: ("gating", "merged", "合 main，更新绿点"),
+    ev.TASK_CREATED: ("draft", "ready", "refresh projection after checks pass"),
+    ev.WORKER_IDLE: ("ready", "assigned", "dispatcher assigns the task"),
+    ev.ROUND_GREEN: ("in_progress", "evidence_wait", "collect evidence, notify the gate"),
+    ev.ROUND_RED: ("in_progress", "in_progress", "roll back and re-feed"),
+    ev.TASK_STUCK: ("in_progress", "stuck", "trigger post-mortem research"),
+    ev.REPRO_SPLIT: ("stuck", "ready", "generate repro-script contract"),
+    ev.EXPERT_DECIDED: ("escalated", "ready", "write new strategy back to the ledger"),
+    ev.ALL_GREEN: ("gating", "merged", "merge to main, update the green point"),
 }
 
 
 def handle_event(kind: str, task_status: str) -> tuple[str | None, str]:
-    """把事件映射成 (新状态, 动作名)。
+    """Map an event to (new status, action name).
 
-    成功返回 (新状态, 动作)；事件与状态不匹配或 kind 未知时返回
-    (None, 中文错误原因)，错误原因与 illegal() 同口径。
-    METRICS_STALL 是项目级事件（§3.2 末行）：不迁移任务状态，
-    只做项目计数，两次触发即暂停派发并升级。
+    On success returns (new status, action). When the event does not match
+    the status, or the kind is unknown, returns (None, error reason) with
+    the same wording as illegal(). METRICS_STALL is a project-level event
+    (last row of §3.2): it does not transition any task status, only
+    bumps a project counter; two triggers pause dispatch and escalate.
     """
     if kind == ev.METRICS_STALL:
         if task_status not in ALLOWED:
             return None, illegal(task_status, task_status) or ""
-        return task_status, "项目级计数，两次触发暂停派发并升级"
+        return task_status, "project-level count; two triggers pause dispatch and escalate"
     if kind not in EVENT_RULES:
-        return None, f"未知事件类型 '{kind}'，合法类型：{'、'.join(EVENT_RULES)}、{ev.METRICS_STALL}"
+        kinds = ", ".join(list(EVENT_RULES) + [ev.METRICS_STALL])
+        return None, f"Unknown event kind '{kind}', valid kinds: {kinds}"
     want, to, action = EVENT_RULES[kind]
     if task_status != want:
-        return None, f"事件 {kind} 要求任务处于 {want} 状态，现在是 {task_status}"
+        return None, f"Event {kind} requires the task to be in status {want}, got {task_status}"
     return to, action

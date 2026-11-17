@@ -1,18 +1,20 @@
-# 脱敏仿制自 bigdev 真实台账 agents/voc-dev-manage-agent/待办/v3.0_2026-09-24/派工计划.yml
-# （仿其顶层 version/module/workers/tasks 与任务字段 todo/objective/group/client/worker/
-#   lifecycle/evidence/status/depends_on/attempts/failure_class/reassigned_to 的真实形状，
-#   仓库地址、worker 名、任务内容全部替换为虚构样例；status 混入四种枚举以覆盖映射）
+# Sanitized replica of a real bigdev ledger (agents/voc-dev-manage-agent/待办/v3.0_2026-09-24/派工计划.yml).
+# Mirrors the real shapes of top-level version/module/workers/tasks and task
+# fields todo/objective/group/client/worker/lifecycle/evidence/status/
+# depends_on/attempts/failure_class/reassigned_to; repo paths, worker names,
+# and task content are all replaced with fictional samples. Status values mix
+# four enum spellings to cover the mapping (legacy Chinese enums kept verbatim).
 version: v2.0_2026-01-05
 module: demo
 clients: [Codex]
-manager_actions: [拆分, 分析依赖, 派工, 证据验收, 重派, 整合]
+manager_actions: [split, analyze deps, dispatch, evidence review, redispatch, integrate]
 parallelism:
   min_ready: 5
   actual_parallel: 3
-  resource_conflict_reason: "共享测试环境由 Manager 串行安排。"
+  resource_conflict_reason: "The shared test environment is scheduled serially by the Manager."
 failure_policy:
-  classes: [基础设施, 断言失败, 超时, 依赖阻塞]
-  reassign: "断言失败交原 Worker 修复；基础设施与超时由 Manager 判断重试或换 Worker。"
+  classes: [infrastructure, assertion failure, timeout, dependency-blocked]
+  reassign: "Assertion failures go back to the original worker; infrastructure and timeout cases are retried or reassigned by the Manager."
 workers:
   demo-api-worker1:
     client: Codex
@@ -22,46 +24,46 @@ workers:
     clone: /workers/demo-ui-agent1
 tasks:
   - id: demo-api-search
-    todo: demo-api/搜索结果分页.md
-    objective: "搜索结果按页取数，断言语义不变。"
-    group: 用户任务协作
+    todo: demo-api/search-pagination.md
+    objective: "Paginate the search results while keeping assertion semantics unchanged."
+    group: user-task collaboration
     client: Codex
     worker: demo-api-worker1
     depends_on: []
-    lifecycle: [实现, 测试, 部署, 真实回放, commit, push, MR]
-    evidence: demo-api 测试输出/搜索分页/（待生成）
+    lifecycle: [implement, test, deploy, real replay, commit, push, MR]
+    evidence: demo-api test output/search-pagination/(to be generated)
     status: done
   - id: demo-ui-theme
-    todo: demo-ui/主题色跟随系统.md
-    objective: "UI 主题跟随系统深浅色，加两条判据。"
-    group: 用户任务协作
+    todo: demo-ui/theme-follows-system.md
+    objective: "Make the UI theme follow the system light/dark mode, plus two acceptance criteria."
+    group: user-task collaboration
     client: Codex
     worker: demo-ui-worker1
     depends_on: []
-    lifecycle: [实现, 测试, 部署]
-    evidence: demo-ui 测试输出（待生成）
+    lifecycle: [implement, test, deploy]
+    evidence: demo-ui test output (to be generated)
     status: 进行中
   - id: demo-api-export
-    todo: demo-api/导出加进度条.md
-    objective: "大表导出改异步并加进度查询接口。"
-    group: 体验补修
+    todo: demo-api/export-progress-bar.md
+    objective: "Switch large-table export to async and add a progress-query endpoint."
+    group: experience fixes
     client: Codex
     worker: demo-api-worker1
     depends_on: [demo-api-search]
-    lifecycle: [实现, 测试, MR]
-    evidence: demo-api 测试输出（待生成）
+    lifecycle: [implement, test, MR]
+    evidence: demo-api test output (to be generated)
     status: 待办
     attempts: 1
-    failure_class: 断言失败
-    failure_evidence: "01-04 首跑超时"
-    reassigned_to: 原 Worker
+    failure_class: assertion failure
+    failure_evidence: "01-04 first run timed out"
+    reassigned_to: original worker
   - id: demo-ui-legacy-cleanup
-    todo: demo-ui/旧组件退役.md
-    objective: "无引用旧组件删除并全量回归。"
-    group: 卫生
+    todo: demo-ui/retire-legacy-components.md
+    objective: "Delete unreferenced legacy components and run the full regression."
+    group: hygiene
     client: Codex
     worker: demo-ui-worker1
     depends_on: []
-    lifecycle: [实现, 测试, MR]
-    evidence: demo-ui 测试输出（待生成）
+    lifecycle: [implement, test, MR]
+    evidence: demo-ui test output (to be generated)
     status: queued

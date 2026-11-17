@@ -1,12 +1,14 @@
-"""评审工人（§8.7）：门禁前的第二双眼。
+"""Review worker (§8.7): a second pair of eyes before the gate.
 
-规则是底座，engine 缺省也能跑：
-- diff 删了测试文件 → needs_fix（测试只增不减）；
-- 新增代码行数超过 500 → needs_fix"拆小"；
-- 新增代码含 TODO/FIXME → 追加提示但不拦（只提醒，不翻 verdict）；
-- 其余 pass。
-engine 注入时先调 run_round 拿一份分析垫在意见最前，再叠加规则判定；
-引擎抛错或返回空不阻塞，规则照跑。
+The rules are the base, so it runs even without an engine:
+- the diff deletes a test file -> needs_fix (tests may only grow);
+- more than 500 added code lines -> needs_fix "split it up";
+- added code containing TODO/FIXME -> an appended hint but no block
+  (remind only, never flip the verdict);
+- otherwise pass.
+When an engine is injected, run_round is called first and its analysis is
+prepended to the comments before the rule verdicts stack on top; an engine
+error or empty output blocks nothing, the rules still run.
 """
 
 from __future__ import annotations
@@ -21,13 +23,13 @@ __all__ = ["ReviewResult", "Reviewer"]
 
 @dataclass(frozen=True)
 class ReviewResult:
-    """一次评审的结论：verdict 是 pass / needs_fix，comments 逐条给理由。"""
+    """One review's conclusion: verdict is pass / needs_fix, comments give the reasons one by one."""
 
     verdict: str
     comments: list[str] = field(default_factory=list)
 
 
-# 测试文件路径：tests/ 目录、test_*.py、*_test.py（正反斜杠都认）。
+# test file paths: tests/ directories, test_*.py, *_test.py (forward and back slashes both recognized).
 _TEST_PATH_RE = re.compile(
     r"(?:^|[\\/])tests?[\\/]"
     r"|(?:^|[\\/])test_[^\\/]+\.py$"
@@ -37,7 +39,7 @@ _TODO_RE = re.compile(r"TODO|FIXME")
 
 
 def _strip_ab_prefix(path: str) -> str:
-    """去掉 git diff 路径里的 a/ b/ 前缀。"""
+    """Strip the a/ b/ prefixes git diff puts on paths."""
     return path[2:] if path[:2] in ("a/", "b/") else path
 
 
@@ -46,7 +48,7 @@ def _is_test_path(path: str) -> bool:
 
 
 class Reviewer:
-    """评审工：review 出结构化结论，gate 给门禁一个布尔。"""
+    """Review worker: review produces a structured conclusion, gate hands the gate a boolean."""
 
     PASS = "pass"
     NEEDS_FIX = "needs_fix"
@@ -56,57 +58,60 @@ class Reviewer:
         self.engine = engine
 
     def review(self, diff_text: str) -> ReviewResult:
-        """评审一份 unified diff：规则判定 verdict，意见按"引擎分析 → 规则"排序。"""
+        """Review one unified diff: the rules decide the verdict; comments are ordered "engine analysis -> rules"."""
         lines = (diff_text or "").splitlines()
         comments: list[str] = []
         blocking = False
 
         analysis = self._engine_analysis(diff_text or "")
         if analysis:
-            comments.append(f"引擎分析：{analysis}")
+            comments.append(f"engine analysis: {analysis}")
 
         deleted_tests = self._deleted_test_files(lines)
         if deleted_tests:
             blocking = True
             for path in deleted_tests:
-                comments.append(f"删测试文件：{path}，测试只增不减，先补回或说明理由")
+                comments.append(
+                    f"deleted test file: {path}; tests may only grow, restore it or state the reason"
+                )
 
         added = [l for l in lines if l.startswith("+") and not l.startswith("+++")]
         if len(added) > self.MAX_ADDED_LINES:
             blocking = True
             comments.append(
-                f"新增 {len(added)} 行，超过 {self.MAX_ADDED_LINES} 行上限，请拆小后再提交"
+                f"added {len(added)} lines, over the {self.MAX_ADDED_LINES}-line limit, split it up before submitting"
             )
 
         todo_hits = [l for l in added if _TODO_RE.search(l)]
         if todo_hits:
             comments.append(
-                f"新增代码含 TODO/FIXME（{len(todo_hits)} 处），请清理或登记成任务"
+                f"added code contains TODO/FIXME ({len(todo_hits)} spots), clean them up or register them as tasks"
             )
 
         verdict = self.NEEDS_FIX if blocking else self.PASS
         return ReviewResult(verdict=verdict, comments=comments)
 
     def gate(self, review: ReviewResult) -> bool:
-        """门禁前置：pass 放行，needs_fix 拦下。"""
+        """Gate precondition: pass lets it through, needs_fix blocks."""
         return review.verdict == self.PASS
 
-    # ---- 内部 -------------------------------------------------------
+    # ---- internals ---------------------------------------------------
 
     def _engine_analysis(self, diff_text: str) -> str:
         if self.engine is None:
             return ""
         try:
             out = self.engine.run_round(
-                "评审以下 diff：查测试覆盖、命名、明显缺陷", diff_text
+                "Review the following diff: check test coverage, naming, obvious defects",
+                diff_text,
             )
-        except Exception:  # 引擎缺席/失败不阻塞评审，规则兜底
+        except Exception:  # an absent/failed engine must not block the review; the rules carry it
             return ""
         return (out or "").strip()
 
     @staticmethod
     def _deleted_test_files(lines: list[str]) -> list[str]:
-        """被删的测试文件：目标侧是 /dev/null 且来源路径长得像测试。"""
+        """Deleted test files: the target side is /dev/null and the source path looks like a test."""
         deleted: list[str] = []
         source = ""
         for line in lines:

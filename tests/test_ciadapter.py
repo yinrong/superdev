@@ -1,7 +1,8 @@
-"""superdev.ciadapter 的测试：三态轮询、事件 payload、同状态不重复记事件。
+"""Tests for superdev.ciadapter: three-state polling, event payloads, no duplicate events for a repeated state.
 
-watch 全部用假回调注入，不做任何真实 HTTP；GithubCIWatch/GitlabCIWatch 的
-用例同样 monkeypatch urllib.request.urlopen 喂假 JSON，全程离线。
+All watches are injected as fake callbacks, so no real HTTP happens; the
+GithubCIWatch/GitlabCIWatch cases likewise monkeypatch urllib.request.urlopen
+with fake JSON, fully offline.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ MR_URL = "https://git.example.com/superdev/-/merge_requests/7"
 
 @dataclass
 class ScriptedWatch:
-    """假远端查询：按脚本弹出状态，记录调用次数；脚本演完回落 pending。"""
+    """Fake remote query: pops states from a script and counts calls; falls back to pending when the script runs out."""
 
     states: list[str] = field(default_factory=list)
     log_tail: str = ""
@@ -42,7 +43,7 @@ def _log(tmp_path) -> EventLog:
     return EventLog(tmp_path / "events.jsonl")
 
 
-# ---------- 三态 ----------
+# ---------- the three states ----------
 
 
 def test_success_returns_green_and_records_all_green(tmp_path):
@@ -50,7 +51,7 @@ def test_success_returns_green_and_records_all_green(tmp_path):
     watch = ScriptedWatch([CI_SUCCESS])
     adapter = CIAdapter(watch)
 
-    assert adapter.poll_once(MR_URL, log) == "绿"
+    assert adapter.poll_once(MR_URL, log) == "green"
 
     events = log.events()
     assert [e["kind"] for e in events] == [ALL_GREEN]
@@ -62,7 +63,7 @@ def test_failure_returns_feed_back_and_records_round_red(tmp_path):
     log = _log(tmp_path)
     adapter = CIAdapter(ScriptedWatch([CI_FAILURE], log_tail="FAILED tests/test_a.py::test_x"))
 
-    assert adapter.poll_once(MR_URL, log) == "回喂"
+    assert adapter.poll_once(MR_URL, log) == "feedback"
 
     events = log.events()
     assert [e["kind"] for e in events] == [ROUND_RED]
@@ -76,14 +77,14 @@ def test_pending_returns_wait_without_events(tmp_path):
     watch = ScriptedWatch([CI_PENDING, CI_PENDING])
     adapter = CIAdapter(watch)
 
-    assert adapter.poll_once(MR_URL, log) == "等待"
-    assert adapter.poll_once(MR_URL, log) == "等待"
+    assert adapter.poll_once(MR_URL, log) == "wait"
+    assert adapter.poll_once(MR_URL, log) == "wait"
 
-    assert len(log) == 0  # 没落任何事件
-    assert watch.calls == 2  # 但每次都真的查了远端
+    assert len(log) == 0  # no events recorded
+    assert watch.calls == 2  # but the remote really was queried each time
 
 
-# ---------- 事件 payload 与截断 ----------
+# ---------- event payload and truncation ----------
 
 
 def test_round_red_payload_truncates_log_tail_to_200_lines(tmp_path):
@@ -94,32 +95,33 @@ def test_round_red_payload_truncates_log_tail_to_200_lines(tmp_path):
     adapter.poll_once(MR_URL, log)
 
     payload = log.events()[0]["payload"]
-    assert payload["log_tail"].splitlines() == lines[-200:]  # 与本地回喂同一条 200 行纪律
+    assert payload["log_tail"].splitlines() == lines[-200:]  # same 200-line discipline as local feed-back
     assert log.verify() == (True, 0)
 
 
-# ---------- 连续 poll 幂等性 ----------
+# ---------- idempotence across repeated polls ----------
 
 
 def test_same_terminal_state_repeat_records_event_once(tmp_path):
     log = _log(tmp_path)
     adapter = CIAdapter(ScriptedWatch([CI_SUCCESS, CI_SUCCESS, CI_SUCCESS]))
 
-    assert adapter.poll_once(MR_URL, log) == "绿"
-    assert adapter.poll_once(MR_URL, log) == "绿"
-    assert adapter.poll_once(MR_URL, log) == "绿"
+    assert adapter.poll_once(MR_URL, log) == "green"
+    assert adapter.poll_once(MR_URL, log) == "green"
+    assert adapter.poll_once(MR_URL, log) == "green"
 
-    assert len(log) == 1  # 同一 mr 连续绿：ALL_GREEN 只记第一条
+    assert len(log) == 1  # the same mr staying green: ALL_GREEN recorded only once
 
 
 def test_pending_gap_lets_next_terminal_state_record_again(tmp_path):
     log = _log(tmp_path)
-    # 失败 → 失败（重复，不记）→ pending（新推了一轮 CI）→ 失败（新结果，要记）
+    # failure -> failure (duplicate, not recorded) -> pending (a fresh CI round was
+    # pushed) -> failure (a new result, must be recorded)
     adapter = CIAdapter(ScriptedWatch([CI_FAILURE, CI_FAILURE, CI_PENDING, CI_FAILURE]))
 
     verdicts = [adapter.poll_once(MR_URL, log) for _ in range(4)]
 
-    assert verdicts == ["回喂", "回喂", "等待", "回喂"]
+    assert verdicts == ["feedback", "feedback", "wait", "feedback"]
     kinds = [e["kind"] for e in log.events()]
     assert kinds == [ROUND_RED, ROUND_RED]
 
@@ -137,11 +139,11 @@ def test_different_mr_urls_record_independently(tmp_path):
     assert [e["payload"]["mr_url"] for e in events] == [MR_URL, other_url]
 
 
-# ---------- 真实 API watch（monkeypatch urlopen，全程离线） ----------
+# ---------- real-API watches (urlopen monkeypatched, fully offline) ----------
 
 
 class _FakeResponse:
-    """假 HTTP 响应：只实现 urlopen 结果用到的 read + 上下文管理。"""
+    """Fake HTTP response: implements only read + context management, as used by urlopen's result."""
 
     def __init__(self, payload):
         self._body = json.dumps(payload).encode("utf-8")
@@ -168,7 +170,7 @@ def _install_urlopen(monkeypatch, payload=None, error=None, captured=None):
 
 
 def _header(req, name) -> str | None:
-    # urllib 会把 header 键做 capitalize 处理，断言按大小写无关取
+    # urllib capitalizes header keys; assertions look them up case-insensitively
     for k, v in req.headers.items():
         if k.lower() == name.lower():
             return v
@@ -277,7 +279,7 @@ def test_gitlab_token_sends_private_token_header(monkeypatch):
     assert req.full_url == "https://gitlab.com/api/v4/projects/123/pipelines?ref=main&per_page=1"
 
 
-# ---------- 两个 Watch 接进 CIAdapter.poll_once 走通 ----------
+# ---------- both watches wired into CIAdapter.poll_once end to end ----------
 
 
 def test_adapter_with_github_watch_success_records_all_green(monkeypatch, tmp_path):
@@ -285,7 +287,7 @@ def test_adapter_with_github_watch_success_records_all_green(monkeypatch, tmp_pa
     log = _log(tmp_path)
     adapter = CIAdapter(GithubCIWatch("owner/repo", "main").check)
 
-    assert adapter.poll_once(MR_URL, log) == "绿"
+    assert adapter.poll_once(MR_URL, log) == "green"
 
     events = log.events()
     assert [e["kind"] for e in events] == [ALL_GREEN]
@@ -297,7 +299,7 @@ def test_adapter_with_gitlab_watch_failure_records_round_red(monkeypatch, tmp_pa
     log = _log(tmp_path)
     adapter = CIAdapter(GitlabCIWatch(123, "main").check)
 
-    assert adapter.poll_once(MR_URL, log) == "回喂"
+    assert adapter.poll_once(MR_URL, log) == "feedback"
 
     events = log.events()
     assert [e["kind"] for e in events] == [ROUND_RED]

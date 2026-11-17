@@ -1,9 +1,9 @@
-"""管理端 hook 裁决（设计文档 §2 Hook 清单）：四个纯函数，供会话装配调用。
+"""Manager-side hook rulings (design doc §2 hook list): four pure functions for session assembly to call.
 
-- guard_write：AI 写文件前，目标不在台账目录就拦下（"管理端只写台账"）
-- guard_command：AI 执行命令前，git 子命令是 commit/push 就拦下（"管理端不代做交付"）
-- post_write_check：台账落盘后自动跑 check_plan，错误注回会话
-- stop_gate：会话收口门，全量 pytest + 事件日志哈希链校验，任一坏阻止收尾
+- guard_write: before the AI writes a file, block it if the target is outside the ledger directory ("managers may only write the ledger")
+- guard_command: before the AI runs a command, block it if the git subcommand is commit/push ("managers do not deliver on workers' behalf")
+- post_write_check: after the ledger is written, run check_plan automatically and feed problems back into the session
+- stop_gate: session close-out gate: full pytest + event log hash chain verification; either failing blocks close-out
 """
 from __future__ import annotations
 
@@ -26,29 +26,30 @@ __all__ = [
     "stop_gate",
 ]
 
-WRITE_DENIED = "管理端只写台账"
-COMMAND_DENIED = "管理端不代做交付"
-PYTEST_TIMEOUT = 300  # 秒：stop_gate 里全量 pytest 的时间上限
+WRITE_DENIED = "managers may only write the ledger"
+COMMAND_DENIED = "managers do not deliver on workers' behalf"
+PYTEST_TIMEOUT = 300  # seconds: upper bound for the full pytest run inside stop_gate
 
-# git 顶层的"带值选项"：跳过选项本身后还要连值一起跳过，
-# 否则 git -C ../repo commit 这种写法会漏判
+# git's top-level "options with a value": skip the option together with its value,
+# otherwise spellings like `git -C ../repo commit` would slip through
 _GIT_OPTS_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
 
 
 def guard_write(
     target_path: str | os.PathLike, allowed_root: str | os.PathLike
 ) -> tuple[bool, str]:
-    """写文件前裁决：target_path 不在 allowed_root 目录下 → (False, 拒绝理由)。
+    """Ruling before a file write: target_path not under allowed_root -> (False, denial reason).
 
-    路径统一过 os.path.abspath 再比，相对路径、正反斜杠都不影响判定；
-    前缀相似但不同目录（如 ledger 与 ledger2）不算在其下。
+    Both paths go through os.path.abspath before comparing, so relative paths and
+    slash direction never affect the verdict; a path that merely shares a prefix
+    but lives in a different directory (ledger vs ledger2) does not count as under it.
     """
     target = os.path.abspath(str(target_path))
     root = os.path.abspath(str(allowed_root))
     try:
         under = os.path.commonpath([target, root]) == root
     except ValueError:
-        # 两个路径不在同一个盘符下，commonpath 直接抛错，必然不在其下
+        # the two paths sit on different drives; commonpath raises outright, so it cannot be under the root
         under = False
     if not under:
         return False, WRITE_DENIED
@@ -56,10 +57,11 @@ def guard_write(
 
 
 def guard_command(cmdline: str | list[str] | tuple[str, ...]) -> tuple[bool, str]:
-    """执行命令前裁决：命令里的 git 子命令是 commit 或 push → (False, 拒绝理由)。
+    """Ruling before a command runs: a git subcommand of commit or push -> (False, denial reason).
 
-    字符串命令按空白切词；git 后面允许带任意个选项（带值选项连值一起跳过），
-    第一个非选项词是 commit/push 才拦，git status / git log 这类只读命令放行。
+    String commands are split on whitespace; git may carry any number of options first
+    (value-carrying options skip their value too); only when the first non-option word
+    is commit/push do we block. Read-only commands like git status / git log pass.
     """
     if isinstance(cmdline, str):
         tokens = cmdline.split()
@@ -73,26 +75,27 @@ def guard_command(cmdline: str | list[str] | tuple[str, ...]) -> tuple[bool, str
         while j < len(lowered):
             word = lowered[j]
             if word in _GIT_OPTS_WITH_VALUE:
-                j += 2  # 选项和它的值都不算子命令
+                j += 2  # the option and its value are both skipped
                 continue
             if word.startswith("-"):
                 j += 1
                 continue
             if word in ("commit", "push"):
                 return False, COMMAND_DENIED
-            break  # 碰到别的子命令（status/log/…）就不是 commit/push 了
+            break  # some other subcommand (status/log/...) means it is not commit/push
     return True, ""
 
 
 def post_write_check(plan_path: str | os.PathLike) -> tuple[bool, list[str]]:
-    """台账写完后的自动校验：check_plan 全过 → (True, [])，否则 (False, 中文问题清单)。
+    """Automatic check after the ledger is written: check_plan fully passes -> (True, []), otherwise (False, problem list).
 
-    复现脚本等相对路径按台账文件所在目录解析；台账本身解析失败也算不通过。
+    Relative paths such as repro scripts resolve against the ledger file's directory;
+    a ledger that itself fails to parse also counts as not passing.
     """
     try:
         plan = load_plan(plan_path)
     except LedgerError as e:
-        return False, [f"台账解析失败：{e}"]
+        return False, [f"ledger parse failed: {e}"]
     problems = check_plan(plan, knowledge_dir=Path(plan_path).resolve().parent)
     return not problems, list(problems)
 
@@ -100,10 +103,11 @@ def post_write_check(plan_path: str | os.PathLike) -> tuple[bool, list[str]]:
 def stop_gate(
     repo_root: str | os.PathLike, event_log_path: str | os.PathLike | None = None
 ) -> tuple[bool, list[str]]:
-    """会话收口门：全量 pytest + 事件日志哈希链校验，任一坏 → (False, 问题清单)。
+    """Session close-out gate: full pytest + event log hash chain verification; either failing -> (False, problem list).
 
-    pytest 用当前解释器在 repo_root 下跑，超时 PYTEST_TIMEOUT 秒；
-    事件日志缺省取 repo_root/events.jsonl，文件不存在视为无需校验（verify 容忍）。
+    pytest runs with the current interpreter under repo_root with a PYTEST_TIMEOUT-second
+    limit; the event log defaults to repo_root/events.jsonl, and a missing file means
+    there is nothing to verify (verify tolerates it).
     """
     problems: list[str] = []
     try:
@@ -118,12 +122,14 @@ def stop_gate(
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
     except subprocess.TimeoutExpired:
-        problems.append(f"全量测试超时：{PYTEST_TIMEOUT} 秒内没有跑完，不能收尾")
+        problems.append(
+            f"full test run timed out: not finished within {PYTEST_TIMEOUT}s, cannot close out"
+        )
     else:
         if proc.returncode != 0:
             tail = "\n".join((proc.stdout or "").splitlines()[-5:])
             problems.append(
-                f"全量测试未通过（pytest 退出码 {proc.returncode}），最近输出：\n{tail}"
+                f"full test run failed (pytest exit code {proc.returncode}), recent output:\n{tail}"
             )
 
     log_path = (
@@ -133,5 +139,7 @@ def stop_gate(
     )
     ok, pos = EventLog(log_path).verify()
     if not ok:
-        problems.append(f"事件日志校验失败：第 {pos} 条事件的哈希链断裂，决策链不可信")
+        problems.append(
+            f"event log verification failed: hash chain broken at event {pos}, decision chain untrustworthy"
+        )
     return not problems, problems

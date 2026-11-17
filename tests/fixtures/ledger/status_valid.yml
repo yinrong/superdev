@@ -1,4 +1,4 @@
-# 测试夹具：有效 status.yml（每模块绿点 + 督办指标，口径见 03-详细设计.md §4）
+# Test fixture: valid status.yml (per-module green points + supervision metrics; see design/03-detailed-design.md section 4)
 project: demo
 modules:
   - repo: D:\devs\dev4\demo

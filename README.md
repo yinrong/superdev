@@ -74,10 +74,10 @@ Or use it as a library without cloning: `pip install "superdev @ git+https://git
 Then the self-hosting party trick — the repo validates its own development ledger:
 
 ```bash
-python superdev_cli.py check agents/superdev-dev/派工计划.yml
-# 校验通过：0 处问题
+python superdev_cli.py check agents/superdev-dev/plan.yml
+# validation passed: 0 issues
 python superdev_cli.py round agents/superdev-dev
-# 投影已刷新：21 个任务
+# projection refreshed: 22 tasks
 ```
 
 Import a spec-kit plan and run it as tracked tasks:
@@ -117,7 +117,7 @@ spec-kit plans the right thing; superdev lands it green. They compose: import a 
 
 This repository was built by superdev itself, dogfooded end to end:
 
-- **21 tasks** in a public ledger ([agents/superdev-dev/](agents/superdev-dev/派工计划.yml)), dispatched to **14 worker sessions**
+- **21 tasks** in a public ledger ([agents/superdev-dev/](agents/superdev-dev/plan.yml)), dispatched to **14 worker sessions**
 - **8 green points**: every merge happened only after the full suite passed at a new high-water mark (59 → 143 → 223 → 239 → 310 → 342 tests)
 - The contract validator (`check`) rejected this repo's own ledger twice during development — once for a file-boundary violation, once for over-parallel dispatch. Both were fixed through the rules, not around them.
 
@@ -132,7 +132,7 @@ Stalled work surfaces as a structured decision — failure case, what was tried,
 ## Documentation
 
 - [中文 README](README.zh-CN.md)
-- [Design: positioning & selling points](design/01-卖点.md) · [architecture](design/02-架构设计.md) · [detailed design](design/03-详细设计.md) · [lessons from our predecessor](design/04-bigdev问题与改进.md) · [competitive analysis](design/05-竞品对比.md)
+- [Design: positioning & selling points](design/01-positioning.md) · [architecture](design/02-architecture.md) · [detailed design](design/03-detailed-design.md) · [lessons from our predecessor](design/04-lessons-from-bigdev.md) · [competitive analysis](design/05-competitor-comparison.md)
 - Contracts: [manager](commands/superdev-manage.md) · [worker](commands/superdev-work.md)
 
 ## Status & roadmap

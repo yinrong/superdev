@@ -1,9 +1,10 @@
-"""端到端测试用的离线假件：脚本化回归器 + 假 git，全程不碰真 git。
+"""Offline fakes for end-to-end tests: a scripted regression runner + fake git; never touches real git.
 
-ScriptedRunner 实现 engines.RegressionRunner 协议（run(module) 判绿），
-按构造时传入的绿/红脚本逐轮出结果，演完再跑就报错（与 EchoEngine 同款约定）。
-FakeGit 实现 GitOps 的三个同名方法：rev-parse 返回固定 sha，
-checkout/reset 只记录调用序列并返回成功。
+ScriptedRunner implements the engines.RegressionRunner protocol (run(module)
+judges green), producing results round by round from the green/red script passed
+at construction; running past the script raises (same convention as EchoEngine).
+FakeGit implements GitOps' three same-named methods: rev-parse returns a fixed
+sha; checkout/reset only record the call sequence and return success.
 """
 from __future__ import annotations
 
@@ -15,12 +16,13 @@ __all__ = ["ScriptedRunner", "FakeGit"]
 
 
 class ScriptedRunner:
-    """按脚本判绿的假回归器。
+    """A scripted regression runner that judges green.
 
-    script 是每轮的绿(True)/红(False)序列；log_tail 是每轮附带的
-    失败日志文本（所有轮共用）。calls 记录每次 run 收到的 module，
-    results 按调用顺序保存真实返回过的 RegressionResult，
-    供测试事后回放进 projection.record_regression（派发器的职责）。
+    script is the per-round green(True)/red(False) sequence; log_tail is the
+    failure log text attached to every round (shared by all rounds). calls
+    records the module each run received; results keeps the actual
+    RegressionResults returned, in call order, so tests can replay them into
+    projection.record_regression afterwards (the dispatcher's job).
     """
 
     def __init__(self, script: Sequence[bool], log_tail: str = ""):
@@ -32,7 +34,9 @@ class ScriptedRunner:
     def run(self, module: str) -> RegressionResult:
         self.calls.append(module)
         if not self._script:
-            raise RuntimeError("ScriptedRunner 脚本演完：run 调用次数超过传入序列")
+            raise RuntimeError(
+                "ScriptedRunner script exhausted: run was called more times than the provided sequence"
+            )
         green = self._script.pop(0)
         result = RegressionResult(
             green=green,
@@ -44,13 +48,14 @@ class ScriptedRunner:
 
 
 class FakeGit:
-    """GitOps 的离线替身：同名方法、成功返回值、完整调用序列。
+    """An offline stand-in for GitOps: same-named methods, success return values, full call sequence.
 
-    rev_parse 一律返回构造时给定的 sha（模拟模块绿点）；
-    checkout_b / reset_hard 记入 calls 并返回空串（成功）。
-    calls 是 ("rev-parse", ref) / ("checkout", "-B", branch, base) /
-    ("reset", "--hard", ref) 的元组序列，供测试断言
-    "从绿点开新分支、红即回滚"的纪律轨迹。
+    rev_parse always returns the sha given at construction (simulating the
+    module's green point); checkout_b / reset_hard are recorded into calls and
+    return an empty string (success). calls is a sequence of ("rev-parse", ref)
+    / ("checkout", "-B", branch, base) / ("reset", "--hard", ref) tuples for
+    tests to assert the discipline trail "branch from the green point, roll
+    back on red".
     """
 
     def __init__(self, sha: str = "0" * 40):

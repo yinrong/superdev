@@ -1,4 +1,4 @@
-"""superdev_cli.py 的测试：各子命令经 subprocess 真跑，验证输出与退出码。"""
+"""Tests for superdev_cli.py: every subcommand really runs via subprocess, checking output and exit codes."""
 import os
 import subprocess
 import sys
@@ -12,12 +12,12 @@ GOOD_PLAN = """\
 project: clidemo
 tasks:
   - id: T01
-    title: 任务一
+    title: task one
     status: ready
     files: [superdev/a.py]
     size: small
   - id: T02
-    title: 任务二
+    title: task two
     status: in_progress
     files: [tests/test_a.py]
     size: medium
@@ -28,14 +28,14 @@ BAD_PLAN = """\
 project: clidemo
 tasks:
   - id: T01
-    title: 任务一
+    title: task one
     status: ready
     files: [docs/design.md]
 """
 
 
 def run_cli(*args, cwd=None) -> subprocess.CompletedProcess:
-    """用当前解释器真跑 superdev_cli.py，退出码和输出原样带回。"""
+    """Really run superdev_cli.py with the current interpreter; exit code and output come back as-is."""
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     return subprocess.run(
         [sys.executable, str(REPO / "superdev_cli.py"), *[str(a) for a in args]],
@@ -52,7 +52,7 @@ def run_cli(*args, cwd=None) -> subprocess.CompletedProcess:
 def _project(tmp_path: Path, plan_text: str = GOOD_PLAN) -> Path:
     proj = tmp_path / "clidemo"
     proj.mkdir()
-    (proj / "派工计划.yml").write_text(plan_text, encoding="utf-8")
+    (proj / "plan.yml").write_text(plan_text, encoding="utf-8")
     return proj
 
 
@@ -60,22 +60,22 @@ def _project(tmp_path: Path, plan_text: str = GOOD_PLAN) -> Path:
 
 def test_check_good_plan_exits_zero(tmp_path):
     proj = _project(tmp_path)
-    r = run_cli("check", proj / "派工计划.yml")
+    r = run_cli("check", proj / "plan.yml")
     assert r.returncode == 0
-    assert "校验通过" in r.stdout
+    assert "validation passed" in r.stdout
 
 
 def test_check_bad_plan_exits_one(tmp_path):
     proj = _project(tmp_path, BAD_PLAN)
-    r = run_cli("check", proj / "派工计划.yml")
+    r = run_cli("check", proj / "plan.yml")
     assert r.returncode == 1
-    assert "越界" in r.stdout
+    assert "out of bounds" in r.stdout
 
 
 def test_check_missing_plan_exits_one(tmp_path):
     r = run_cli("check", tmp_path / "nope.yml")
     assert r.returncode == 1
-    assert "加载失败" in r.stderr
+    assert "failed to load" in r.stderr
 
 
 # ---------- status ----------
@@ -93,7 +93,7 @@ def test_status_prints_task_lines_after_round(tmp_path):
     r = run_cli("status", proj)
     assert r.returncode == 0
     assert "T01" in r.stdout and "ready" in r.stdout
-    assert "红0次" in r.stdout
+    assert "red 0" in r.stdout
 
 
 # ---------- round ----------
@@ -105,8 +105,8 @@ def test_round_refreshes_projection_and_counts_pending(tmp_path):
     log.append(WORKER_IDLE, {"worker": "w1"})
     r = run_cli("round", proj)
     assert r.returncode == 0
-    assert "投影已刷新：2 个任务" in r.stdout
-    assert "待办事件：2 条" in r.stdout
+    assert "projection refreshed: 2 tasks" in r.stdout
+    assert "pending events: 2" in r.stdout
     assert (proj / "projection.db").exists()
 
 
@@ -115,7 +115,7 @@ def test_round_missing_plan_exits_one(tmp_path):
     proj.mkdir()
     r = run_cli("round", proj)
     assert r.returncode == 1
-    assert "不存在" in r.stderr
+    assert "Plan file not found" in r.stderr
 
 
 # ---------- verify ----------
@@ -125,20 +125,21 @@ def test_verify_intact_log_exits_zero(tmp_path):
     EventLog(log_path).append(TASK_CREATED, {"task_id": "T01"})
     r = run_cli("verify", log_path)
     assert r.returncode == 0
-    assert "校验通过" in r.stdout
+    assert "verification passed" in r.stdout
 
 
 def test_verify_tampered_log_exits_one(tmp_path):
     log_path = tmp_path / "events.jsonl"
     EventLog(log_path).append(TASK_CREATED, {"task_id": "T01"})
     raw = log_path.read_text(encoding="utf-8")
-    # canonical 序列化冒号后无空格，按无空格替换才改得中
+    # canonical serialization has no space after the colon; replace without the
+    # space or the tamper misses
     log_path.write_text(
         raw.replace('"task_id":"T01"', '"task_id":"T99"'), encoding="utf-8"
     )
     r = run_cli("verify", log_path)
     assert r.returncode == 1
-    assert "校验失败" in r.stdout
+    assert "verification failed" in r.stdout
 
 
 # ---------- import-spec ----------
@@ -153,24 +154,25 @@ def _spec_dir(tmp_path: Path, plan_text: str) -> Path:
 def test_import_spec_good_path_writes_plan_and_prints_warnings(tmp_path):
     spec = _spec_dir(
         tmp_path,
-        "- [ ] 改 README 错字\n"
-        "- [ ] 给台账加载器补一个按模块过滤任务列表的参数并写测试\n",
+        "- [ ] Fix the README typo\n"
+        "- [ ] Add a module filter arg to the ledger loader, with tests\n",
     )
     out = tmp_path / "feat-plan.yml"
     r = run_cli("import-spec", spec, out)
     assert r.returncode == 0
-    assert "导入完成：2 个任务" in r.stdout
-    # 2 个任务少于建议下限 10，check 警告要照打但退出码仍是 0
-    assert "check 警告 1 处" in r.stdout
-    assert "少于" in r.stdout
+    assert "import complete: 2 tasks" in r.stdout
+    # 2 tasks is below the recommended minimum of 10: the check warning must
+    # still print while the exit code stays 0
+    assert "check warnings: 1" in r.stdout
+    assert "fewer than" in r.stdout
     assert out.exists()
 
 
 def test_import_spec_over_limit_exits_one(tmp_path):
-    spec = _spec_dir(tmp_path, "".join(f"- [ ] 任务 {i}\n" for i in range(1, 5)))
+    spec = _spec_dir(tmp_path, "".join(f"- [ ] task {i}\n" for i in range(1, 5)))
     r = run_cli("import-spec", spec, tmp_path / "plan.yml", "--max-tasks", "3")
     assert r.returncode == 1
-    assert "先拆小再导入" in r.stderr
+    assert "split into smaller tasks before importing" in r.stderr
     assert not (tmp_path / "plan.yml").exists()
 
 
@@ -179,10 +181,10 @@ def test_import_spec_missing_list_exits_one(tmp_path):
     empty.mkdir()
     r = run_cli("import-spec", empty, tmp_path / "plan.yml")
     assert r.returncode == 1
-    assert "找不到 plan.md 或 tasks.md" in r.stderr
+    assert "no plan.md or tasks.md" in r.stderr
 
 
-# ---------- 入口 ----------
+# ---------- entry point ----------
 
 def test_no_subcommand_prints_usage_exit_two():
     r = run_cli()

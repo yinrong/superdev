@@ -1,4 +1,4 @@
-"""superdev.events 的测试：JSONL 事件日志、防篡改哈希链、派发消费、并发追加。"""
+"""Tests for superdev.events: JSONL event log, tamper-evident hash chain, dispatch consumption, concurrent appends."""
 
 import json
 import threading
@@ -21,7 +21,7 @@ def _write_lines(path, lines):
 
 
 def _tamper(path, event_id, new_payload):
-    """改掉某条事件的 payload 后原样写回，模拟离线篡改。"""
+    """Rewrite one event's payload in place, simulating offline tampering."""
     lines = _read_lines(path)
     rec = json.loads(lines[event_id - 1])
     rec["payload"] = new_payload
@@ -42,7 +42,7 @@ def test_append_and_read(tmp_path):
     stored = [json.loads(line) for line in _read_lines(log.path)]
     assert [e["event_id"] for e in stored] == [1, 2]
     assert [e["kind"] for e in stored] == [ev.TASK_CREATED, ev.ROUND_GREEN]
-    assert datetime.fromisoformat(r1["created_at"])  # created_at 是合法 ISO 时间
+    assert datetime.fromisoformat(r1["created_at"])  # created_at is a valid ISO timestamp
 
 
 def test_kind_constants_match_design_table():
@@ -105,7 +105,7 @@ def test_verify_catches_tampered_first_line(tmp_path):
     log = EventLog(tmp_path / "events.jsonl")
     for i in range(3):
         log.append(ev.ALL_GREEN, {"i": i})
-    _tamper(log.path, 1, {"i": "改了"})
+    _tamper(log.path, 1, {"i": "tampered"})
     assert log.verify() == (False, 1)
 
 
@@ -114,7 +114,7 @@ def test_verify_catches_deleted_line(tmp_path):
     for i in range(4):
         log.append(ev.TASK_STUCK, {"i": i})
     lines = _read_lines(log.path)
-    del lines[1]  # 抽掉第 2 条，链在位置 2 断开
+    del lines[1]  # remove the 2nd event; the chain breaks at position 2
     _write_lines(log.path, lines)
     assert log.verify() == (False, 2)
 
@@ -128,7 +128,7 @@ def test_unfired_and_mark_fired(tmp_path):
     assert log.mark_fired(2) is True
     assert [e["event_id"] for e in log.unfired()] == [1, 3, 4]
     assert [e["event_id"] for e in log.unfired(limit=2)] == [1, 3]
-    assert log.mark_fired(2) is False  # 重复标记幂等
+    assert log.mark_fired(2) is False  # re-marking is idempotent
     with pytest.raises(KeyError):
         log.mark_fired(99)
 
@@ -137,7 +137,7 @@ def test_fired_state_survives_reopen(tmp_path):
     path = tmp_path / "events.jsonl"
     log = EventLog(path)
     log.append(ev.REPRO_SPLIT, {"case": "c1"})
-    log.append(ev.EXPERT_DECIDED, {"choice": "换引擎"})
+    log.append(ev.EXPERT_DECIDED, {"choice": "switch engine"})
     log.mark_fired(1)
 
     reopened = EventLog(path)
@@ -162,8 +162,8 @@ def test_concurrent_append_no_loss_no_dup(tmp_path):
     for th in threads:
         th.join()
 
-    assert len(log) == n_threads * per_thread  # 20 条不丢
+    assert len(log) == n_threads * per_thread  # all 20 events survive
     ids = sorted(e["event_id"] for e in log.events())
-    assert ids == list(range(1, n_threads * per_thread + 1))  # 自增不重
+    assert ids == list(range(1, n_threads * per_thread + 1))  # ids increase without duplicates
     assert len(log.unfired()) == n_threads * per_thread
-    assert log.verify() == (True, 0)  # 并发写完链仍完整
+    assert log.verify() == (True, 0)  # chain stays intact after concurrent writes

@@ -36,7 +36,7 @@ python -m pytest -q          # 342 passed
 自举彩蛋——仓库校验自己的开发台账：
 
 ```bash
-python superdev_cli.py check agents/superdev-dev/派工计划.yml
+python superdev_cli.py check agents/superdev-dev/plan.yml
 # 校验通过：0 处问题
 ```
 

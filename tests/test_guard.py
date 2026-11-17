@@ -1,6 +1,7 @@
-"""superdev.guard 的测试：tasklist 解析（样例 CSV 字符串喂入）、
-超限处置清单、10% 过载边界。terminate 有两处：签名校验 + 一次性真杀
-（只杀测试自己起的子进程，finally 兜底防泄漏）。"""
+"""Tests for superdev.guard: tasklist parsing (fed a sample CSV string), the
+over-limit action list, and the 10% overload boundary. terminate appears twice:
+a signature check + a one-shot real kill (only kills a subprocess the test
+itself started, with a finally fallback to prevent leaks)."""
 
 import inspect
 import subprocess
@@ -10,7 +11,7 @@ import pytest
 
 from superdev import guard
 
-# 真机 `tasklist /FO CSV /NH` 的样例输出（列：映像名/PID/会话名/会话#/内存）
+# Sample output of a real `tasklist /FO CSV /NH` (columns: image name/PID/session name/session#/memory)
 SAMPLE_CSV = (
     '"System Idle Process","0","Services","0","8 K"\r\n'
     '"python.exe","1234","Console","1","150,324 K"\r\n'
@@ -38,7 +39,7 @@ class TestParseTasklist:
         assert first["pid"] == 0
         assert first["name"] == "System Idle Process"
         assert first["memory_mb"] == pytest.approx(8 / 1024)
-        assert first["cmdline"] == ""  # tasklist 不给命令行，约定留空
+        assert first["cmdline"] == ""  # tasklist gives no command line; left empty by convention
 
     def test_pid_is_int(self):
         procs = guard.parse_tasklist(SAMPLE_CSV)
@@ -61,9 +62,9 @@ class TestParseTasklist:
 
 class TestSnapshot:
     def test_snapshot_on_real_machine(self):
-        procs = guard.snapshot()  # Windows 标准库实现，真调 tasklist
+        procs = guard.snapshot()  # Windows standard-library implementation; really calls tasklist
         assert isinstance(procs, list)
-        assert len(procs) > 0  # 系统里总有进程
+        assert len(procs) > 0  # a live system always has processes
         sample = procs[0]
         assert isinstance(sample["pid"], int)
         assert isinstance(sample["name"], str) and sample["name"]
@@ -81,12 +82,12 @@ class TestEnforce:
             "pid": 1,
             "name": "engine_a.exe",
             "memory_mb": 9000.0,
-            "action": "结束",
+            "action": "terminate",
         }
 
     def test_boundary_equal_not_listed(self):
         exact = [_proc(9, "edge.exe", 8192.0)]
-        assert guard.enforce(exact, mem_limit_mb=8192) == []  # 恰好等于不算超
+        assert guard.enforce(exact, mem_limit_mb=8192) == []  # exactly at the limit does not count as over
 
     def test_all_below_returns_empty(self):
         small = [_proc(1, "a.exe", 100.0), _proc(2, "b.exe", 200.0)]
@@ -102,7 +103,7 @@ class TestOverload:
         assert guard.overload(snap, total_mem_mb=1000) is True
 
     def test_exactly_10_percent_not_overloaded(self):
-        snap = [_proc(1, "a.exe", 900.0)]  # 空闲恰好 10%
+        snap = [_proc(1, "a.exe", 900.0)]  # free is exactly 10%
         assert guard.overload(snap, total_mem_mb=1000) is False
 
     def test_healthy_not_overloaded(self):
@@ -115,21 +116,21 @@ class TestOverload:
 
 class TestTerminate:
     def test_defined_callable_never_invoked(self):
-        # 只验签名与可调用，绝不真杀进程
+        # only checks the signature and callability; never kills a real process
         assert callable(guard.terminate)
         params = inspect.signature(guard.terminate).parameters
         assert list(params) == ["pid"]
 
     def test_real_kill_terminates_subprocess(self):
-        # 真杀安全测试：起一个睡 60 秒的子进程，terminate 后 10 秒内必须退出
+        # safe real-kill test: start a subprocess sleeping 60s; it must exit within 10s of terminate
         proc = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60)"]
         )
         try:
             guard.terminate(proc.pid)
-            proc.wait(timeout=10)  # 超时未退出会抛 TimeoutExpired，测试即红
-            assert proc.returncode is not None  # 被杀退出，returncode 有值
+            proc.wait(timeout=10)  # not exiting in time raises TimeoutExpired and turns the test red
+            assert proc.returncode is not None  # killed and exited: returncode is set
         finally:
-            if proc.poll() is None:  # 兜底防进程泄漏
+            if proc.poll() is None:  # fallback so no process leaks
                 proc.kill()
                 proc.wait(timeout=10)

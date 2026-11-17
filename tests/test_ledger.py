@@ -1,4 +1,4 @@
-"""ledger.py 的测试：正常解析、缺字段、重复 id、坏依赖、坏状态、原子写。"""
+"""Tests for ledger.py: happy-path parsing, missing fields, duplicate ids, bad dependencies, bad statuses, atomic writes."""
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,16 +25,16 @@ FIX = Path(__file__).parent / "fixtures" / "ledger"
 def test_load_plan_valid():
     plan = load_plan(FIX / "plan_valid.yml")
     assert plan.project == "demo"
-    assert plan.kind == "单仓软件"
+    assert plan.kind == "single-repo software"
     assert plan.version == "v0.1.0"
     assert plan.statuses[0] == "draft" and "stuck" in plan.statuses
     assert plan.modules[0]["repo"] == r"D:\devs\dev4\demo"
     assert len(plan.tasks) == 3
     t1 = plan.tasks[0]
-    assert (t1.id, t1.title, t1.status) == ("T01", "地基任务", "draft")
+    assert (t1.id, t1.title, t1.status) == ("T01", "Foundation task", "draft")
     assert t1.files == ["demo/a.py", "tests/test_a.py"]
     assert t1.size == "small"
-    assert t1.research == ["读 demo/a.py 现状"]
+    assert t1.research == ["Read the current state of demo/a.py"]
     assert t1.depends_on == []
     assert plan.tasks[1].depends_on == ["T01"]
 
@@ -45,14 +45,14 @@ def test_load_plan_optional_fields_default_to_empty():
 
 
 def test_load_plan_file_not_found():
-    with pytest.raises(LedgerError, match="不存在"):
+    with pytest.raises(LedgerError, match="not found"):
         load_plan(FIX / "no_such_file.yml")
 
 
 def test_load_plan_yaml_syntax_error(tmp_path):
     bad = tmp_path / "bad.yml"
-    bad.write_text("tasks: [未闭合", encoding="utf-8")
-    with pytest.raises(LedgerError, match="语法错误"):
+    bad.write_text("tasks: [unclosed", encoding="utf-8")
+    with pytest.raises(LedgerError, match="syntax error"):
         load_plan(bad)
 
 
@@ -63,7 +63,7 @@ def test_load_plan_missing_required_field():
 
 
 def test_load_plan_statuses_header_defaults():
-    # 夹具故意不写 statuses 头，应回退到 DEFAULT_STATUSES
+    # Fixture deliberately omits the statuses header; should fall back to DEFAULT_STATUSES
     plan = load_plan(FIX / "plan_dup_id.yml")
     assert plan.statuses == DEFAULT_STATUSES
 
@@ -75,10 +75,10 @@ def test_validate_valid_plan_passes():
 
 
 def test_validate_duplicate_id():
-    plan = load_plan(FIX / "plan_dup_id.yml")  # 加载本身不查重，交给校验器
+    plan = load_plan(FIX / "plan_dup_id.yml")  # loading itself does not dedupe; that is the validator's job
     with pytest.raises(LedgerError) as exc:
         validate_basic(plan)
-    assert "重复" in str(exc.value) and "T01" in str(exc.value)
+    assert "Duplicate" in str(exc.value) and "T01" in str(exc.value)
 
 
 def test_validate_unknown_dependency():
@@ -90,21 +90,22 @@ def test_validate_unknown_dependency():
 def test_validate_bad_status():
     with pytest.raises(LedgerError) as exc:
         validate_basic(load_plan(FIX / "plan_bad_status.yml"))
-    assert "todo" in str(exc.value) and "枚举" in str(exc.value)
+    assert "todo" in str(exc.value) and "enumeration" in str(exc.value)
 
 
 def test_validate_enum_comes_from_file_header():
-    # ready 在默认枚举合法，但本夹具头部写死了 [todo, doing, done]，必须判非法
+    # ready is legal under the default enumeration, but this fixture pins the
+    # header to [todo, doing, done], so it must be judged illegal
     plan = load_plan(FIX / "plan_custom_statuses.yml")
     assert plan.statuses == ["todo", "doing", "done"]
     with pytest.raises(LedgerError) as exc:
         validate_basic(plan)
     assert "A2" in str(exc.value) and "ready" in str(exc.value)
-    plan.tasks[1].status = "doing"  # 改回枚举内即通过
+    plan.tasks[1].status = "doing"  # back inside the enumeration: passes again
     assert validate_basic(plan) is None
 
 
-# ---------- save_plan / 原子写 ----------
+# ---------- save_plan / atomic write ----------
 
 def test_save_plan_roundtrip(tmp_path):
     plan = load_plan(FIX / "plan_valid.yml")
@@ -119,14 +120,14 @@ def test_save_plan_failure_keeps_original_and_cleans_tmp(monkeypatch, tmp_path):
     before = target.read_bytes()
 
     def boom(src, dst):
-        raise OSError("模拟替换失败")
+        raise OSError("simulated replace failure")
 
     monkeypatch.setattr("superdev.ledger.os.replace", boom)
-    with pytest.raises(OSError, match="模拟替换失败"):
+    with pytest.raises(OSError, match="simulated replace failure"):
         save_plan(load_plan(target), target)
 
-    assert target.read_bytes() == before          # 原文件分毫未动
-    assert list(tmp_path.glob("*.tmp")) == []     # 临时文件已清理
+    assert target.read_bytes() == before          # original file untouched
+    assert list(tmp_path.glob("*.tmp")) == []     # temp file cleaned up
 
 
 # ---------- update_task_status ----------
@@ -142,8 +143,8 @@ def test_update_task_status(tmp_path):
     update_task_status(target, "T02", "in_progress")
     reloaded = load_plan(target)
     assert reloaded.tasks[1].status == "in_progress"
-    assert reloaded.tasks[0].status == "draft"     # 其他任务不受影响
-    assert reloaded.statuses[0] == "draft"          # 枚举头保住了
+    assert reloaded.tasks[0].status == "draft"     # other tasks unaffected
+    assert reloaded.statuses[0] == "draft"          # statuses header preserved
 
 
 def test_update_task_status_rejects_illegal_status(tmp_path):
@@ -151,8 +152,8 @@ def test_update_task_status_rejects_illegal_status(tmp_path):
     before = target.read_bytes()
     with pytest.raises(LedgerError) as exc:
         update_task_status(target, "T01", "todo")
-    assert "非法状态" in str(exc.value)
-    assert target.read_bytes() == before           # 拒绝时文件不动
+    assert "Illegal status" in str(exc.value)
+    assert target.read_bytes() == before           # file untouched on rejection
 
 
 def test_update_task_status_unknown_task(tmp_path):
@@ -160,7 +161,7 @@ def test_update_task_status_unknown_task(tmp_path):
     before = target.read_bytes()
     with pytest.raises(LedgerError) as exc:
         update_task_status(target, "T99", "ready")
-    assert "找不到任务 'T99'" in str(exc.value)
+    assert "Task 'T99' not found" in str(exc.value)
     assert target.read_bytes() == before
 
 
@@ -192,45 +193,49 @@ def test_load_status_module_missing_repo():
 
 
 def test_load_status_top_level_not_mapping():
-    with pytest.raises(LedgerError, match="顶层"):
+    with pytest.raises(LedgerError, match="top level"):
         load_status(FIX / "status_not_dict.yml")
 
 
 def test_load_status_file_not_found():
-    with pytest.raises(LedgerError, match="不存在"):
+    with pytest.raises(LedgerError, match="not found"):
         load_status(FIX / "no_status.yml")
 
 
-# ---------- load_bigdev_plan（bigdev 存量台账兼容读入，详细设计 §7） ----------
+# ---------- load_bigdev_plan (legacy bigdev ledger compat reading, detailed design §7) ----------
 
 BIGDEV_FIX = FIX / "bigdev"
 
 
 def test_load_bigdev_plan_field_mapping():
     plan = load_bigdev_plan(BIGDEV_FIX / "full.yml")
-    assert plan.project == "demo"                       # module → project
+    assert plan.project == "demo"                       # module -> project
     assert plan.version == "v2.0_2026-01-05"
-    assert plan.statuses == DEFAULT_STATUSES            # 状态枚举用 superdev 全集
+    assert plan.statuses == DEFAULT_STATUSES            # status enumeration uses the superdev full set
     t = plan.tasks[0]
-    assert (t.id, t.title, t.status) == ("demo-api-search", "搜索结果按页取数，断言语义不变。", "done")
-    assert t.files == [] and t.size == "medium" and t.research == []  # 缺省兜底
-    assert plan.tasks[2].depends_on == ["demo-api-search"]            # depends_on 保住
+    assert (t.id, t.title, t.status) == (
+        "demo-api-search",
+        "Paginate the search results while keeping assertion semantics unchanged.",
+        "done",
+    )
+    assert t.files == [] and t.size == "medium" and t.research == []  # defaults filled in
+    assert plan.tasks[2].depends_on == ["demo-api-search"]            # depends_on preserved
 
 
 def test_load_bigdev_plan_status_mapping():
     by_id = {t.id: t.status for t in load_bigdev_plan(BIGDEV_FIX / "full.yml").tasks}
-    assert by_id["demo-api-search"] == "done"           # done → done
-    assert by_id["demo-ui-theme"] == "in_progress"      # 进行中 → in_progress
-    assert by_id["demo-api-export"] == "ready"          # 待办 → ready
-    assert by_id["demo-ui-legacy-cleanup"] == "draft"   # queued 无对应 → draft
+    assert by_id["demo-api-search"] == "done"           # done -> done
+    assert by_id["demo-ui-theme"] == "in_progress"      # 进行中 -> in_progress
+    assert by_id["demo-api-export"] == "ready"          # 待办 -> ready
+    assert by_id["demo-ui-legacy-cleanup"] == "draft"   # queued has no mapping -> draft
 
 
 def test_load_bigdev_plan_compat_notes_record_ignored_fields():
     notes = load_bigdev_plan(BIGDEV_FIX / "full.yml").compat_notes
     text = "\n".join(notes)
-    assert "workers" in text                # bigdev worker 表没有 superdev 对应，要记账
-    assert "lifecycle" in text              # 任务级字段同样记账
-    assert any("draft" in n for n in notes)  # 无对应状态落 draft 也记账
+    assert "workers" in text                # the bigdev worker table has no superdev counterpart; must be recorded
+    assert "lifecycle" in text              # task-level fields recorded too
+    assert any("draft" in n for n in notes)  # unmapped statuses falling to draft are recorded too
 
 
 def test_load_bigdev_plan_sparse_fixture_no_crash():
@@ -240,19 +245,19 @@ def test_load_bigdev_plan_sparse_fixture_no_crash():
     assert all(t.status in DEFAULT_STATUSES for t in plan.tasks)
     assert all(t.size == "medium" for t in plan.tasks)
     by_id = {t.id: t for t in plan.tasks}
-    assert by_id["t-a"].status == "draft"               # 缺 status → draft
-    assert by_id["t-b"].status == "ready"               # 待办 → ready
-    assert by_id["t-a"].title == "第一件事"              # 无 objective 用 todo 文件名兜底
-    assert by_id["t-b"].title == "t-b"                  # 连 todo 都没有用 id 兜底
-    assert validate_basic(plan) is None                 # 兜底结果直接可进基础校验
+    assert by_id["t-a"].status == "draft"               # missing status -> draft
+    assert by_id["t-b"].status == "ready"               # 待办 -> ready
+    assert by_id["t-a"].title == "first-thing"          # no objective: falls back to the todo file name
+    assert by_id["t-b"].title == "t-b"                  # no todo either: falls back to the id
+    assert validate_basic(plan) is None                 # the fallback result passes basic validation directly
 
 
 def test_load_bigdev_plan_native_plan_keeps_compat_notes_empty():
-    # 原生台账路径不受兼容字段影响
+    # the native ledger path is unaffected by compat fields
     assert load_plan(FIX / "plan_valid.yml").compat_notes == []
 
 
-# ---------- init_last_green（首跑初始化 status.yml，详细设计 §7） ----------
+# ---------- init_last_green (first-run status.yml initialization, detailed design §7) ----------
 
 
 def test_init_last_green_first_run_writes_git_head(tmp_path, monkeypatch):
@@ -268,7 +273,7 @@ def test_init_last_green_first_run_writes_git_head(tmp_path, monkeypatch):
 
 def test_init_last_green_no_git_falls_back_unverified(tmp_path, monkeypatch):
     def boom(*a, **k):
-        raise FileNotFoundError("没有 git")
+        raise FileNotFoundError("git unavailable")
 
     monkeypatch.setattr("superdev.ledger.subprocess.run", boom)
     assert init_last_green(tmp_path) == "unverified"
@@ -289,6 +294,6 @@ def test_init_last_green_second_run_does_not_overwrite(tmp_path, monkeypatch):
         "superdev.ledger.subprocess.run",
         lambda *a, **k: SimpleNamespace(stdout="2" * 40 + "\n", returncode=0),
     )
-    assert init_last_green(tmp_path) == "1" * 40          # 返回旧值
-    assert len(calls) == 1                                # 二跑不再碰 git
+    assert init_last_green(tmp_path) == "1" * 40          # returns the old value
+    assert len(calls) == 1                                # second run never touches git
     assert load_status(tmp_path / "status.yml")["modules"][0]["last_green"] == "1" * 40

@@ -1,13 +1,14 @@
-"""superdev 管理端命令行入口（设计文档 §2/§3.3 的对账面）。
+"""superdev manager-side command-line entry (the reconciliation surface of design docs §2/§3.3).
 
-五个子命令：
-  check <派工计划.yml>    校验台账，有问题退出 1
-  status <项目目录>       读台账+投影，每任务一行（id、状态、红次数）
-  round <项目目录>        一轮巡检对账：刷新投影 + 清点待办事件（本轮不真派工）
-  verify <事件日志路径>   校验事件日志哈希链
-  import-spec <spec目录> <输出台账路径>  spec-kit 清单转派工计划，超限打回
+Five subcommands:
+  check <plan.yml>    validate the ledger; exit 1 on problems
+  status <project dir>   read ledger + projection, one line per task (id, status, red count)
+  round <project dir>    one reconciliation patrol: refresh the projection + count pending events (no real dispatching this round)
+  verify <event log path>   validate the event log hash chain
+  import-spec <spec dir> <output ledger path>  spec-kit checklist to dispatch plan; over-cap gets bounced
 
-项目目录指 agents/<项目>，约定里面放 派工计划.yml、projection.db、events.jsonl 三个文件。
+A project dir means agents/<project>, by convention holding the three files
+plan.yml, projection.db and events.jsonl.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from superdev.importspec import MAX_TASKS, SpecImportError, import_spec
 from superdev.ledger import LedgerError, load_plan
 from superdev.projection import Projection
 
-PLAN_NAME = "派工计划.yml"
+PLAN_NAME = "plan.yml"
 DB_NAME = "projection.db"
 EVENTS_NAME = "events.jsonl"
 
@@ -30,16 +31,17 @@ def cmd_check(args: argparse.Namespace) -> int:
     try:
         plan = load_plan(args.plan)
     except LedgerError as e:
-        print(f"派工计划加载失败：{e}", file=sys.stderr)
+        print(f"failed to load dispatch plan: {e}", file=sys.stderr)
         return 1
-    # 复现脚本等相对路径按当前目录解析，与 python -m superdev.check 的缺省一致
+    # relative paths such as repro scripts resolve against the current directory,
+    # matching the default of python -m superdev.check
     problems = check_plan(plan, knowledge_dir=Path.cwd())
     if problems:
-        print(f"校验发现 {len(problems)} 处问题：")
+        print(f"validation found {len(problems)} issues:")
         for p in problems:
             print(f"- {p}")
         return 1
-    print("校验通过：0 处问题")
+    print("validation passed: 0 issues")
     return 0
 
 
@@ -48,19 +50,19 @@ def cmd_status(args: argparse.Namespace) -> int:
     try:
         plan = load_plan(proj_dir / PLAN_NAME)
     except LedgerError as e:
-        print(f"台账读取失败：{e}", file=sys.stderr)
+        print(f"failed to load ledger: {e}", file=sys.stderr)
         return 1
     db_path = proj_dir / DB_NAME
     if not db_path.exists():
-        print(f"投影库不存在：{db_path}")
-        print(f"请先跑一轮对账：python superdev_cli.py round {proj_dir}")
+        print(f"projection database not found: {db_path}")
+        print(f"run a reconciliation round first: python superdev_cli.py round {proj_dir}")
         return 0
     with Projection(db_path) as proj:
         rows = {r["task_id"]: dict(r) for r in _all_tasks(proj)}
-    print(f"项目 {plan.project}：{len(plan.tasks)} 个任务")
+    print(f"project {plan.project}: {len(plan.tasks)} tasks")
     for t in plan.tasks:
         red = rows.get(t.id, {}).get("red_count", 0)
-        print(f"{t.id}  {t.status}  红{red}次")
+        print(f"{t.id}  {t.status}  red {red}")
     return 0
 
 
@@ -74,13 +76,13 @@ def cmd_round(args: argparse.Namespace) -> int:
         with Projection(proj_dir / DB_NAME) as proj:
             count = proj.refresh_from_ledger(proj_dir / PLAN_NAME)
             log = EventLog(proj_dir / EVENTS_NAME)
-            proj.fire_pending(log, handlers={})  # 本轮只对账：不注册任何派发动作
+            proj.fire_pending(log, handlers={})  # this round only reconciles: no dispatch actions registered
             pending = len(log.unfired())
     except LedgerError as e:
-        print(f"台账读取失败：{e}", file=sys.stderr)
+        print(f"failed to load ledger: {e}", file=sys.stderr)
         return 1
-    print(f"投影已刷新：{count} 个任务")
-    print(f"待办事件：{pending} 条（本轮只做对账，不真派工）")
+    print(f"projection refreshed: {count} tasks")
+    print(f"pending events: {pending} (reconciliation only this round, no real dispatching)")
     return 0
 
 
@@ -88,9 +90,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
     log = EventLog(args.log)
     ok, pos = log.verify()
     if ok:
-        print(f"事件日志校验通过：{len(log)} 条事件，哈希链完整")
+        print(f"event log verification passed: {len(log)} events, hash chain intact")
         return 0
-    print(f"事件日志校验失败：第 {pos} 条事件的哈希链断裂")
+    print(f"event log verification failed: hash chain broken at event {pos}")
     return 1
 
 
@@ -98,47 +100,47 @@ def cmd_import_spec(args: argparse.Namespace) -> int:
     try:
         plan = import_spec(args.spec_dir, args.out_plan, max_tasks=args.max_tasks)
     except SpecImportError as e:
-        print(f"spec 导入失败：{e}", file=sys.stderr)
+        print(f"spec import failed: {e}", file=sys.stderr)
         return 1
-    print(f"导入完成：{len(plan.tasks)} 个任务，已写入 {args.out_plan}")
-    # 警告只提示不打断：粒度偏大之类的由管理端决定要不要拆
+    print(f"import complete: {len(plan.tasks)} tasks written to {args.out_plan}")
+    # warnings inform but never interrupt: whether to split coarse granularity is the manager's call
     warnings = getattr(plan, "warnings", [])
     if warnings:
-        print(f"check 警告 {len(warnings)} 处：")
+        print(f"check warnings: {len(warnings)}")
         for w in warnings:
             print(f"- {w}")
     else:
-        print("check 警告：0 处")
+        print("check warnings: 0")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="superdev_cli.py", description="superdev 管理端对账命令行"
+        prog="superdev_cli.py", description="superdev manager-side reconciliation CLI"
     )
-    sub = parser.add_subparsers(dest="command", metavar="<子命令>")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    p = sub.add_parser("check", help="校验派工计划，有问题退出 1")
-    p.add_argument("plan", help="派工计划.yml 路径")
+    p = sub.add_parser("check", help="validate the dispatch plan; exit 1 on problems")
+    p.add_argument("plan", help="path to plan.yml")
     p.set_defaults(func=cmd_check)
 
-    p = sub.add_parser("status", help="每任务一行：id、状态、红次数")
-    p.add_argument("project", help="项目目录（agents/<项目>）")
+    p = sub.add_parser("status", help="one line per task: id, status, red count")
+    p.add_argument("project", help="project directory (agents/<project>)")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("round", help="一轮巡检对账：刷新投影 + 清点待办事件")
-    p.add_argument("project", help="项目目录（agents/<项目>）")
+    p = sub.add_parser("round", help="one reconciliation patrol: refresh the projection + count pending events")
+    p.add_argument("project", help="project directory (agents/<project>)")
     p.set_defaults(func=cmd_round)
 
-    p = sub.add_parser("verify", help="校验事件日志哈希链")
-    p.add_argument("log", help="事件日志路径（events.jsonl）")
+    p = sub.add_parser("verify", help="validate the event log hash chain")
+    p.add_argument("log", help="event log path (events.jsonl)")
     p.set_defaults(func=cmd_verify)
 
-    p = sub.add_parser("import-spec", help="spec-kit 清单转派工计划，超限打回")
-    p.add_argument("spec_dir", help="spec-kit 目录（内含 plan.md 或 tasks.md）")
-    p.add_argument("out_plan", help="输出台账路径（如 agents/<项目>/派工计划.yml）")
+    p = sub.add_parser("import-spec", help="spec-kit checklist to dispatch plan; over-cap gets bounced")
+    p.add_argument("spec_dir", help="spec-kit directory (containing plan.md or tasks.md)")
+    p.add_argument("out_plan", help="output ledger path (e.g. agents/<project>/plan.yml)")
     p.add_argument(
-        "--max-tasks", type=int, default=MAX_TASKS, help=f"导入任务数上限，默认 {MAX_TASKS}"
+        "--max-tasks", type=int, default=MAX_TASKS, help=f"task-count import cap, default {MAX_TASKS}"
     )
     p.set_defaults(func=cmd_import_spec)
     return parser

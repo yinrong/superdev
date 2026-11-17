@@ -1,6 +1,6 @@
-# 测试夹具：校验八项全过的派工计划
+# Test fixture: a dispatch plan that passes all eight validation checks
 project: checkdemo
-kind: 单仓软件
+kind: single-repo software
 version: v0.1.0
 modules:
   - repo: D:\devs\dev4\demo
@@ -9,14 +9,14 @@ modules:
 
 tasks:
   - id: T01
-    title: 地基任务
+    title: foundation task
     status: ready
     files: [superdev/a.py, tests/test_a.py]
     size: small
 
-  # §1.1 第 5 条的复现微任务：脚本指向本仓库真实存在的夹具文件
+  # repro micro-task per §1.1 point 5: the script points at a fixture file that really exists in this repo
   - id: repro:case-1
-    title: 复现失败用例 case-1
+    title: reproduce failing case case-1
     status: draft
     files: [tests/fixtures/check/repro_ok.sh]
     size: trivial

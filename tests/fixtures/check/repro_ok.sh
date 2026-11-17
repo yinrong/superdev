@@ -1,3 +1,3 @@
 #!/bin/sh
-# 复现脚本夹具：check.py 只查存在性与扩展名，本脚本不会被执行
+# Repro script fixture: check.py only checks existence and extension; this script is never executed
 exit 0

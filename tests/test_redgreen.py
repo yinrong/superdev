@@ -1,6 +1,7 @@
-"""superdev.engines 与 superdev.redgreen 的测试：假引擎按脚本演戏、dry_run 命令拼接、红绿循环纪律。
+"""Tests for superdev.engines and superdev.redgreen: fake engine playing a script, dry_run command assembly, red-green loop discipline.
 
-全文件不碰真 git：GitOps 用 dry_run，subprocess 的失败与超时用 monkeypatch 顶替。
+Nothing here touches real git: GitOps runs in dry_run, and subprocess failures
+and timeouts are monkeypatched in.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ def _red(sha: str = "sha-red", tail: str = "FAIL test_x\nAssertionError: boom") 
 
 @dataclass
 class ScriptedRunner:
-    """假回归：按脚本每次弹出一个结果，并记录见过的模块名。"""
+    """Fake regression runner: pops one scripted result per call and records the module names it saw."""
 
     results: list[RegressionResult] = field(default_factory=list)
     modules: list[str] = field(default_factory=list)
@@ -43,19 +44,19 @@ class ScriptedRunner:
     def run(self, module: str) -> RegressionResult:
         self.modules.append(module)
         if not self.results:
-            raise RuntimeError("ScriptedRunner 脚本演完")
+            raise RuntimeError("ScriptedRunner script exhausted")
         return self.results.pop(0)
 
 
 def _task(**overrides) -> TaskSpec:
-    """默认任务 T06：研究结论关键词"锁竞争"，策略文本引用了它。"""
+    """Default task T06: research notes keyword "lock", and a strategy text that cites it."""
     defaults: dict = dict(
         id="T06",
         module="core",
         base=BASE,
-        title="加回滚",
-        research_notes="锁竞争：连接必须带超时",
-        strategy="策略变更：改用锁竞争超时加重试",
+        title="add rollback",
+        research_notes="lock contention: connections must carry a timeout",
+        strategy="strategy change: switch to lock contention timeout plus retry",
         strategy_changes=1,
     )
     defaults.update(overrides)
@@ -63,7 +64,7 @@ def _task(**overrides) -> TaskSpec:
 
 
 def _loop(tmp_path, outputs, results, knowledge_base=None):
-    """装配一套 dry_run + 假引擎 + 假回归的红绿循环，返回全部部件供断言。"""
+    """Assemble a red-green loop with dry_run git, a fake engine, and a fake regression runner; return all parts for assertions."""
     engine = EchoEngine(list(outputs))
     runner = ScriptedRunner(list(results))
     git_ops = GitOps(dry_run=True)
@@ -72,22 +73,22 @@ def _loop(tmp_path, outputs, results, knowledge_base=None):
     return loop, engine, runner, git_ops, log
 
 
-# ---------- engines.py：EchoEngine 与 GitOps ----------
+# ---------- engines.py: EchoEngine and GitOps ----------
 
 
 def test_echo_engine_performs_script_and_records_calls():
-    engine = EchoEngine(["第一轮产物", "第二轮产物"])
-    assert engine.run_round("T06 加回滚", "") == "第一轮产物"
-    assert engine.run_round("T06 加回滚", "FAIL 日志") == "第二轮产物"
+    engine = EchoEngine(["round 1 output", "round 2 output"])
+    assert engine.run_round("T06 add rollback", "") == "round 1 output"
+    assert engine.run_round("T06 add rollback", "FAIL log") == "round 2 output"
     assert engine.calls == [
-        ("T06 加回滚", ""),
-        ("T06 加回滚", "FAIL 日志"),
+        ("T06 add rollback", ""),
+        ("T06 add rollback", "FAIL log"),
     ]
     assert engine.pending == []
 
 
 def test_echo_engine_exhausted_script_raises():
-    engine = EchoEngine(["只有一轮"])
+    engine = EchoEngine(["one round only"])
     engine.run_round("t", "")
     with pytest.raises(RuntimeError):
         engine.run_round("t", "")
@@ -95,7 +96,7 @@ def test_echo_engine_exhausted_script_raises():
 
 def test_gitops_dry_run_splices_commands_without_running():
     ops = GitOps(cwd="D:/repo", dry_run=True)
-    assert ops.rev_parse(BASE) == BASE  # dry_run 下 rev-parse 原样返回参数
+    assert ops.rev_parse(BASE) == BASE  # in dry_run, rev-parse returns the argument unchanged
     ops.checkout_b("superdev/T06", BASE)
     ops.reset_hard(BASE)
     assert ops.commands == [
@@ -131,11 +132,11 @@ def test_gitops_timeout_raises_git_error(monkeypatch):
         ops.reset_hard(BASE)
 
 
-# ---------- redgreen.py：四条主路径 ----------
+# ---------- redgreen.py: the four main paths ----------
 
 
 def test_round_green_on_first_attempt(tmp_path):
-    loop, engine, runner, git_ops, log = _loop(tmp_path, ["搞定"], [_green()])
+    loop, engine, runner, git_ops, log = _loop(tmp_path, ["done"], [_green()])
     result = loop.round(_task())
 
     assert result.green is True
@@ -143,7 +144,7 @@ def test_round_green_on_first_attempt(tmp_path):
     assert result.attempts == 1
     assert result.reason == ""
     assert len(engine.calls) == 1
-    assert engine.calls[0] == ("T06 加回滚", "")  # 第一轮没有任何回喂上下文
+    assert engine.calls[0] == ("T06 add rollback", "")  # first attempt has no fed-back context
     assert git_ops.commands == [
         ["git", "rev-parse", BASE],
         ["git", "checkout", "-B", "superdev/T06", BASE],
@@ -157,25 +158,25 @@ def test_round_green_on_first_attempt(tmp_path):
 
 def test_round_red_then_green_feeds_tail_back(tmp_path):
     loop, engine, runner, git_ops, log = _loop(
-        tmp_path, ["初稿", "修复"], [_red(), _green()]
+        tmp_path, ["first draft", "fix"], [_red(), _green()]
     )
     result = loop.round(_task())
 
     assert result.green is True
     assert result.attempts == 2
-    assert git_ops.commands[-1] == ["git", "reset", "--hard", BASE]  # 第 1 红整体回滚绿点
-    assert "AssertionError: boom" in engine.calls[1][1]  # 失败日志回喂给了第 2 轮
+    assert git_ops.commands[-1] == ["git", "reset", "--hard", BASE]  # first red rolls all the way back to the green point
+    assert "AssertionError: boom" in engine.calls[1][1]  # the failure log was fed into attempt 2
     assert [e["kind"] for e in log.events()] == [ROUND_RED, ROUND_GREEN]
 
 
 def test_round_two_red_with_citation_continues(tmp_path):
     loop, engine, runner, git_ops, log = _loop(
-        tmp_path, ["方向一", "方向二"], [_red(), _red()]
+        tmp_path, ["direction 1", "direction 2"], [_red(), _red()]
     )
     result = loop.round(_task())
 
     assert result.green is False
-    assert result.stuck is False  # 未卡住：派发器可按新方向另开回合
+    assert result.stuck is False  # not stuck: the dispatcher may open another round with the new direction
     assert result.reason == REASON_CITED
     assert result.attempts == 2
     assert [e["kind"] for e in log.events()] == [ROUND_RED, ROUND_RED]
@@ -183,7 +184,7 @@ def test_round_two_red_with_citation_continues(tmp_path):
 
 def test_round_two_red_without_strategy_changes_stuck(tmp_path):
     task = _task(strategy_changes=0)
-    loop, engine, runner, git_ops, log = _loop(tmp_path, ["方向一", "方向二"], [_red(), _red()])
+    loop, engine, runner, git_ops, log = _loop(tmp_path, ["direction 1", "direction 2"], [_red(), _red()])
     result = loop.round(task)
 
     assert result.stuck is True
@@ -194,9 +195,9 @@ def test_round_two_red_without_strategy_changes_stuck(tmp_path):
 
 
 def test_round_two_red_strategy_not_citing_notes_stuck(tmp_path):
-    # 有策略变更次数，但策略文本不含研究结论的任何关键词 → 纯猜测，程序拒绝
-    task = _task(strategy="策略变更：整套换成别的数据库")
-    loop, engine, runner, git_ops, log = _loop(tmp_path, ["方向一", "方向二"], [_red(), _red()])
+    # strategy change count is nonzero, but the strategy text contains no research-notes keyword -> pure guesswork, refused by the program
+    task = _task(strategy="strategy change: swap the whole thing to a different database")
+    loop, engine, runner, git_ops, log = _loop(tmp_path, ["direction 1", "direction 2"], [_red(), _red()])
     result = loop.round(task)
 
     assert result.stuck is True
@@ -204,20 +205,20 @@ def test_round_two_red_strategy_not_citing_notes_stuck(tmp_path):
     assert [e["kind"] for e in log.events()] == [ROUND_RED, TASK_STUCK]
 
 
-# ---------- redgreen.py：事件、命令序列、截断与知识库 ----------
+# ---------- redgreen.py: events, command sequence, truncation, and knowledge base ----------
 
 
 def test_event_count_ids_and_chain_stay_intact(tmp_path):
-    loop, engine, runner, git_ops, log = _loop(tmp_path, ["方向一", "方向二"], [_red(), _red()])
+    loop, engine, runner, git_ops, log = _loop(tmp_path, ["direction 1", "direction 2"], [_red(), _red()])
     loop.round(_task())
 
     assert len(log) == 2
     assert [e["event_id"] for e in log.events()] == [1, 2]
-    assert log.verify() == (True, 0)  # 循环写完事件后哈希链仍完整
+    assert log.verify() == (True, 0)  # the hash chain is still intact after the loop wrote its events
 
 
 def test_loop_dry_run_command_sequence(tmp_path):
-    loop, engine, runner, git_ops, log = _loop(tmp_path, ["初稿", "修复"], [_red(), _green()])
+    loop, engine, runner, git_ops, log = _loop(tmp_path, ["first draft", "fix"], [_red(), _green()])
     loop.round(_task())
 
     assert git_ops.commands == [
@@ -231,20 +232,20 @@ def test_log_tail_truncated_to_last_200_lines_when_fed_back(tmp_path):
     lines = [f"L{i:03d}" for i in range(1, 351)]
     big_tail = "\n".join(lines)
     loop, engine, runner, git_ops, log = _loop(
-        tmp_path, ["初稿", "修复"], [_red(tail=big_tail), _green()]
+        tmp_path, ["first draft", "fix"], [_red(tail=big_tail), _green()]
     )
     loop.round(_task())
 
     fed = engine.calls[1][1]
-    assert fed.splitlines() == lines[-200:]  # 只回喂最近 200 行
+    assert fed.splitlines() == lines[-200:]  # only the last 200 lines are fed back
     assert len(fed.splitlines()) == 200
 
 
 def test_log_tail_truncated_in_stuck_result(tmp_path):
     lines = [f"L{i:03d}" for i in range(1, 301)]
-    task = _task(strategy_changes=0)  # 走卡住路径，看返回值里的日志截断
+    task = _task(strategy_changes=0)  # take the stuck path to check log truncation in the return value
     loop, engine, runner, git_ops, log = _loop(
-        tmp_path, ["方向一", "方向二"], [_red(), _red(tail="\n".join(lines))]
+        tmp_path, ["direction 1", "direction 2"], [_red(), _red(tail="\n".join(lines))]
     )
     result = loop.round(task)
 
@@ -254,11 +255,11 @@ def test_log_tail_truncated_in_stuck_result(tmp_path):
 
 def test_knowledge_base_injection_counts_as_research(tmp_path):
     kb = KnowledgeBase(tmp_path / "kb.yml")
-    kb.record("踩坑", "锁竞争", "连接池打满导致回归红")
-    # 任务自身研究结论为空，策略只引用知识库注入的坑 → 同样过关
-    task = _task(research_notes="", strategy="策略变更：规避锁竞争，压连接池上限")
+    kb.record("pitfall", "lock contention", "connection pool exhaustion turned the regression red")
+    # the task's own research notes are empty and the strategy cites only the knowledge-base pitfall -> still passes
+    task = _task(research_notes="", strategy="strategy change: avoid lock contention, cap the connection pool")
     loop, engine, runner, git_ops, log = _loop(
-        tmp_path, ["方向一", "方向二"], [_red(), _red()], knowledge_base=kb
+        tmp_path, ["direction 1", "direction 2"], [_red(), _red()], knowledge_base=kb
     )
     result = loop.round(task)
 
@@ -268,13 +269,13 @@ def test_knowledge_base_injection_counts_as_research(tmp_path):
 
 
 def test_runner_judges_module_each_attempt(tmp_path):
-    loop, engine, runner, git_ops, log = _loop(tmp_path, ["初稿", "修复"], [_red(), _green()])
+    loop, engine, runner, git_ops, log = _loop(tmp_path, ["first draft", "fix"], [_red(), _green()])
     loop.round(_task())
     assert runner.modules == ["core", "core"]
 
 
 def test_round_requires_green_base(tmp_path):
-    loop, engine, runner, git_ops, log = _loop(tmp_path, ["搞定"], [_green()])
+    loop, engine, runner, git_ops, log = _loop(tmp_path, ["done"], [_green()])
     with pytest.raises(ValueError):
         loop.round(_task(base=""))
 

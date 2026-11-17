@@ -1,7 +1,8 @@
 # Contributing to superdev
 
 This project is driven by an AI-worker pipeline, so the rules below are
-enforced by programs, not just review. 中文交流同样欢迎。
+enforced by programs, not just review. Chinese-language discussion is
+welcome too.
 
 ## Setup and tests
 
@@ -23,8 +24,8 @@ listed in your work order. Never run `git commit` or `git push` yourself.
 
 ## Task flow
 
-1. Tasks enter the ledger (台账, `agents/superdev-dev/派工计划.yml`)
-   first; no off-ledger work.
+1. Tasks enter the ledger (`agents/superdev-dev/plan.yml`) first;
+   no off-ledger work.
 2. Claim a work order, follow the contract, keep the suite green.
 3. Report evidence: files changed, tail of `python -m pytest -q`,
    one-line self-assessment.

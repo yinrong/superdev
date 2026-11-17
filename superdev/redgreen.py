@@ -1,7 +1,9 @@
-"""红绿循环纪律脚本（详细设计 §1.1–§1.3）：从绿点开工、红即回滚、两败先研究再换方向。
+"""Red-green loop discipline script (detailed design §1.1-§1.3): start from a green point, roll back on red, and after two reds research first, then switch direction.
 
-引擎与回归按 engines 的协议注入，git 全部走 GitOps（测试用 dry_run + 假引擎，
-全程不碰真 git）。事件写入 EventLog，绿点由调用方（派发器）从台账装配进 TaskSpec。
+Engine and regression are injected per the engines protocols; all git goes through
+GitOps (tests use dry_run plus a fake engine, never touching real git). Events are
+written to EventLog; the green point is assembled into TaskSpec by the caller
+(the dispatcher) from the ledger.
 """
 
 from __future__ import annotations
@@ -23,35 +25,36 @@ __all__ = [
     "RedGreenLoop",
 ]
 
-# 同一回合内最多尝试 2 次；第 2 次红必转研究判定，不再第三次（§1.1.4）
+# At most 2 attempts within one round; a 2nd red must go to the research check, never a 3rd try (§1.1.4)
 MAX_ATTEMPTS = 2
-# 失败日志回喂只保留最近 200 行（§1.1.3）
+# Failure log feedback keeps only the last 200 lines (§1.1.3)
 LOG_TAIL_LINES = 200
 
-REASON_NO_CITATION = "策略变更未引用研究"
-REASON_CITED = "策略变更已引用研究"
+REASON_NO_CITATION = "Strategy change cites no research"
+REASON_CITED = "Strategy change cites research"
 
 
 @dataclass
 class TaskSpec:
-    """任务进入红绿循环所需的一切（派发器从台账 + status.yml 装配）。"""
+    """Everything a task needs to enter the red-green loop (assembled by the dispatcher from the ledger + status.yml)."""
 
     id: str
     module: str
-    base: str  # 模块 last_green（sha 或可解析 ref），空值直接拒绝开工
+    base: str  # module last_green (sha or resolvable ref); empty refuses to start
     title: str = ""
-    size: str = "medium"  # 研究预算档位，用于知识库注入
-    research_notes: str = ""  # 任务研究结论（§1.4）
-    strategy: str = ""  # 本次的策略变更文本
-    strategy_changes: int = 0  # 累计策略变更次数，0 表示从未换方向
+    size: str = "medium"  # research budget tier, used for knowledge base injection
+    research_notes: str = ""  # task research conclusions (§1.4)
+    strategy: str = ""  # strategy change text for this round
+    strategy_changes: int = 0  # cumulative strategy change count; 0 means never switched direction
 
 
 @dataclass
 class RoundResult:
-    """一次 round() 的结局。
+    """Outcome of one round() call.
 
-    green 与 stuck 均为 False 表示：新方向已引用研究，交给派发器
-    另开一个回合再试（本回合内没有第三次尝试）。
+    green and stuck both False means: the new direction cites research, so the
+    dispatcher should open another round to retry (no third attempt within this
+    round).
     """
 
     green: bool = False
@@ -62,7 +65,7 @@ class RoundResult:
 
 
 def tail_lines(text: str, limit: int = LOG_TAIL_LINES) -> str:
-    """只保留最后 limit 行：失败日志的尾部才是最新、最有用的部分。"""
+    """Keep only the last limit lines: the tail of a failure log is the freshest, most useful part."""
     lines = text.splitlines()
     if len(lines) <= limit:
         return text
@@ -70,7 +73,7 @@ def tail_lines(text: str, limit: int = LOG_TAIL_LINES) -> str:
 
 
 class RedGreenLoop:
-    """纪律脚本的一回合：绿点开分支 → 实现 → 判绿 → 红回滚回喂 / 两败研究判定。"""
+    """One round of the discipline script: branch at green -> implement -> judge green -> red rolls back and feeds the tail back / two reds trigger the research check."""
 
     def __init__(
         self,
@@ -88,7 +91,7 @@ class RedGreenLoop:
 
     def round(self, task: TaskSpec) -> RoundResult:
         if not task.base:
-            raise ValueError(f"任务 {task.id} 缺少绿点（base），拒绝开工")
+            raise ValueError(f"Task {task.id} is missing its green base; refusing to start")
 
         base = self.git.rev_parse(task.base)
         self.git.checkout_b(f"superdev/{task.id}", base)
@@ -113,7 +116,8 @@ class RedGreenLoop:
                 return RoundResult(green=True, attempts=attempt, log_tail=tail)
 
             if attempt < MAX_ATTEMPTS:
-                # 第 1 次红：记事件、回滚绿点、失败日志（末 200 行）回喂下一轮
+                # First red: record the event, roll back to the green point, and feed the
+                # failure log (last 200 lines) into the next attempt
                 self.log.append(
                     ROUND_RED,
                     {
@@ -127,7 +131,8 @@ class RedGreenLoop:
                 context = f"{context}\n{tail}" if context else tail
                 continue
 
-            # 第 2 次红：先注入模块知识库，再判定策略变更是否引用研究
+            # Second red: inject the module knowledge base first, then check whether
+            # the strategy change cites research
             research_notes = task.research_notes
             if self.kb is not None:
                 injected = self.kb.inject(task.size)
@@ -146,7 +151,8 @@ class RedGreenLoop:
                     stuck=True, reason=REASON_NO_CITATION, attempts=attempt, log_tail=tail
                 )
 
-            # 引用过关：记红事件，交回派发器按新方向另开回合（本回合不试第三次）
+            # Citation passed: record the red event and hand back to the dispatcher to
+            # open another round with the new direction (no third try in this round)
             self.log.append(
                 ROUND_RED,
                 {
@@ -158,4 +164,4 @@ class RedGreenLoop:
             )
             return RoundResult(reason=REASON_CITED, attempts=attempt, log_tail=tail)
 
-        raise AssertionError("两次尝试必然返回，走到这里是逻辑破损")
+        raise AssertionError("Both attempts must return; reaching here means the logic is broken")

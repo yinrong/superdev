@@ -1,11 +1,11 @@
-# 测试夹具：多项违规——坏依赖、files 越界、未知 size
+# Test fixture: multiple violations - bad dependency, files out of bounds, unknown size
 project: checkbad
-kind: 单仓软件
+kind: single-repo software
 version: v0.1.0
 
 tasks:
   - id: B01
-    title: 坏任务
+    title: bad task
     status: ready
     files: [docs/design.md]
     size: huge

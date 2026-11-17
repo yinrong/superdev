@@ -1,9 +1,11 @@
-"""append-only 事件日志：JSONL 存储，防篡改哈希链。
+"""Append-only event log: JSONL storage with a tamper-evident hash chain.
 
-设计出处：design/03-详细设计.md §8.3——每条事件的哈希覆盖上一条事件的哈希，
-形成链式签名，任何人可离线验证"从任务创建到合并"的决策链没被改过。
-事件 kind 常量命名对齐 §3.2 迁移触发表（round_red_1/2 合并为 ROUND_RED，
-两败卡住另发 TASK_STUCK）。
+Design source: design/03-detailed-design.md §8.3 — each event's hash covers the
+previous event's hash, forming a chained signature that anyone can verify
+offline to prove the decision chain "from task creation to merge" was
+never altered. Event kind constants are named after the §3.2 transition
+trigger table (round_red_1/2 merged into ROUND_RED; a two-failure stall
+is a separate TASK_STUCK).
 """
 
 from __future__ import annotations
@@ -24,25 +26,27 @@ EXPERT_DECIDED = "EXPERT_DECIDED"
 ALL_GREEN = "ALL_GREEN"
 METRICS_STALL = "METRICS_STALL"
 
-GENESIS_HASH = "0" * 64  # 链头：第一条事件之前没有上一条
+GENESIS_HASH = "0" * 64  # chain head: no predecessor before the first event
 
 
 def _canonical(record: dict) -> str:
-    """哈希与落盘共用的稳定序列化：键排序，无空白，UTF-8。"""
+    """Stable serialization shared by hashing and disk writes: sorted keys, no whitespace, UTF-8."""
     return json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def _compute_hash(record: dict) -> str:
-    # 除 hash 字段外的整行内容进哈希（prev_hash 天然在内，链由此成立）
+    # Everything except the hash field goes into the hash (prev_hash is
+    # naturally included, which is what makes it a chain)
     body = {k: v for k, v in record.items() if k != "hash"}
     return hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
 
 
 class EventLog:
-    """线程安全的 append-only 事件日志（JSONL + 哈希链 + 已触发标记）。
+    """Thread-safe append-only event log (JSONL + hash chain + fired markers).
 
-    fired 状态是派发器的消费进度，不属于链的一部分，
-    存在旁车文件 <path>.fired，保证主日志严格 append-only。
+    The fired set is the dispatcher's consumption progress; it is not part
+    of the chain and lives in a sidecar file <path>.fired so the main log
+    stays strictly append-only.
     """
 
     def __init__(self, path: str | Path):
@@ -54,7 +58,7 @@ class EventLog:
         self._load()
 
     def _load(self) -> None:
-        """启动时恢复内存状态。宽容解析，完整性问题交给 verify() 判定。"""
+        """Restore in-memory state at startup. Lenient parsing; integrity is verify()'s job."""
         if self._path.exists():
             with open(self._path, encoding="utf-8") as f:
                 for line in f:
@@ -64,7 +68,7 @@ class EventLog:
                     try:
                         rec = json.loads(line)
                     except ValueError:
-                        break  # 坏行之后 prev_hash 已不可信，不再往下装
+                        break  # after a corrupt line, prev_hash is untrustworthy; stop loading
                     if isinstance(rec, dict) and isinstance(rec.get("event_id"), int):
                         self._events.append(rec)
         if self._fired_path.exists():
@@ -78,7 +82,7 @@ class EventLog:
         return self._path
 
     def append(self, kind: str, payload: dict) -> dict:
-        """追加一条事件，返回完整记录（含 hash）。"""
+        """Append one event and return the full record (including hash)."""
         with self._lock:
             prev = self._events[-1]["hash"] if self._events else GENESIS_HASH
             record = {
@@ -96,7 +100,7 @@ class EventLog:
             return dict(record)
 
     def events(self, limit: int | None = None) -> list[dict]:
-        """按 event_id 升序返回事件副本。"""
+        """Return copies of events in ascending event_id order."""
         with self._lock:
             items = [dict(e) for e in self._events]
         return items if limit is None else items[:limit]
@@ -106,11 +110,13 @@ class EventLog:
             return len(self._events)
 
     def verify(self) -> tuple[bool, int]:
-        """离线校验整条哈希链，直接读文件（防内存与磁盘不一致）。
+        """Verify the whole hash chain offline by reading the file directly
+        (guards against memory/disk divergence).
 
-        返回 (是否完整, 第一处坏行的链上位置)。坏行按 1 起的位置计：
-        行解析失败、event_id 不连续、prev_hash 断链、哈希对不上，任一即坏。
-        空日志或文件不存在返回 (True, 0)。
+        Returns (intact, chain position of the first bad line). Bad lines
+        are counted 1-based: unparseable line, non-contiguous event_id,
+        broken prev_hash link, or hash mismatch — any of these counts.
+        An empty log or a missing file returns (True, 0).
         """
         with self._lock:
             if not self._path.exists():
@@ -138,7 +144,7 @@ class EventLog:
             return True, 0
 
     def unfired(self, limit: int | None = None) -> list[dict]:
-        """返回尚未触发的事件（升序），最多 limit 条。派发器消费入口。"""
+        """Return not-yet-fired events (ascending), at most limit of them. The dispatcher's consumption entry."""
         with self._lock:
             pending = [
                 dict(e) for e in self._events if e["event_id"] not in self._fired
@@ -146,10 +152,10 @@ class EventLog:
         return pending if limit is None else pending[:limit]
 
     def mark_fired(self, event_id: int) -> bool:
-        """标记事件已触发。首次标记返回 True，重复标记幂等返回 False。"""
+        """Mark an event as fired. Returns True on first mark, False on idempotent re-mark."""
         with self._lock:
             if not any(e["event_id"] == event_id for e in self._events):
-                raise KeyError(f"未知事件 id: {event_id}")
+                raise KeyError(f"Unknown event id: {event_id}")
             if event_id in self._fired:
                 return False
             self._fired.add(event_id)

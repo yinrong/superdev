@@ -1,9 +1,9 @@
-"""研究纪律的执行内核：预算分档、引用校验、模块知识库。
+"""Execution core of the research discipline: budget tiers, citation checks, and the module knowledge base.
 
-对应详细设计 §1.4（研究纪律）与 §8.8（模块知识库）。
-预算由派发器按台账的任务规模字段定死，不靠 AI 自己分档；
-事后研究的策略变更必须引用 research_notes，否则派发器拒绝。
-只用标准库 + PyYAML。
+Maps to detailed design §1.4 (research discipline) and §8.8 (module knowledge base).
+Budgets are fixed by the dispatcher from the ledger's task-size field, not chosen
+by the AI itself; a post-research strategy change must cite research_notes, or
+the dispatcher refuses it. Standard library + PyYAML only.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-if TYPE_CHECKING:  # 只为类型标注，避免运行期导入投影模块
+if TYPE_CHECKING:  # type annotations only; avoids importing the projection module at runtime
     from superdev.projection import Projection
 
 __all__ = [
@@ -32,18 +32,18 @@ __all__ = [
 
 
 class ResearchError(Exception):
-    """研究纪律违规：未知任务规模，或知识库文件/操作非法。"""
+    """Research discipline violation: an unknown task size, or an illegal knowledge base file/operation."""
 
 
 @dataclass(frozen=True)
 class Budget:
-    """一档研究预算。max_calls 为 None 表示无数字上限（仅 large）。"""
+    """One research budget tier. max_calls None means no numeric cap (large only)."""
 
     max_calls: int | None
     needs_approval: bool = False
 
 
-# §1.4 预算分档表：trivial 跳过、small ≤2、medium ≤10、large 单独批准。
+# §1.4 budget tier table: trivial skips research, small <=2, medium <=10, large needs separate approval.
 _BUDGET_TABLE: dict[str, tuple[int | None, bool]] = {
     "trivial": (0, False),
     "small": (2, False),
@@ -53,21 +53,22 @@ _BUDGET_TABLE: dict[str, tuple[int | None, bool]] = {
 
 
 def budget(size: str) -> Budget:
-    """按任务规模返回研究预算，未知规模抛 ResearchError。"""
+    """Return the research budget for a task size; unknown sizes raise ResearchError."""
     key = str(size).strip().lower()
     if key not in _BUDGET_TABLE:
         raise ResearchError(
-            f"未知任务规模: {size!r}，合法值: {sorted(_BUDGET_TABLE)}"
+            f"Unknown task size: {size!r}, valid values: {sorted(_BUDGET_TABLE)}"
         )
     max_calls, needs_approval = _BUDGET_TABLE[key]
     return Budget(max_calls=max_calls, needs_approval=needs_approval)
 
 
 def can_research(calls_used: int, size: str) -> bool:
-    """是否还允许下一次工具调用：超预算即 False（程序拒绝的依据）。
+    """Whether one more tool call is allowed: over budget returns False (the program's basis for refusal).
 
-    large 无数字预算，恒 True；它的门禁是 budget().needs_approval，
-    由派发器在开工前单独审批，不在此处判断。
+    large has no numeric budget and is always True; its gate is
+    budget().needs_approval, approved separately by the dispatcher before work
+    starts, not checked here.
     """
     b = budget(size)
     if b.max_calls is None:
@@ -75,10 +76,10 @@ def can_research(calls_used: int, size: str) -> bool:
     return calls_used < b.max_calls
 
 
-# 行首的列表符号：- * • 、1. 1) 1、 一、 等，剥掉后取首个词当关键词。
+# Leading bullet markers: - * •, 1. 1) 1、 一、 etc.; strip them and take the first word as the keyword.
 _BULLET_RE = re.compile(r"^(?:[-*•]|\d+[.、)]|[一二三四五六七八九十]+[、.])\s*")
 
-# 行首常见虚词/框架词：不是可引用的关键词，剔掉防止误判。
+# Common leading filler/framework words: not citable keywords; dropped to avoid false matches.
 _STOPWORDS = {
     "the", "a", "an", "to", "be", "is", "are", "was", "on", "for",
     "with", "if", "and", "or", "of", "in", "at", "it", "this", "that",
@@ -87,14 +88,14 @@ _STOPWORDS = {
 
 
 def _keywords(research_notes: str) -> list[str]:
-    """从研究结论里提关键词：每行剥掉列表符号后的首个名词性行首词。"""
+    """Extract keywords from research notes: the first noun-like leading word of each line after stripping bullet markers."""
     keywords: list[str] = []
     for raw in research_notes.splitlines():
         line = _BULLET_RE.sub("", raw.strip())
         if not line:
             continue
         token = line.split()[0]
-        token = re.split(r"[：:]", token)[0]  # “锁竞争：db”整段无空格，冒号前才是名词
+        token = re.split(r"[：:]", token)[0]  # "lock contention: db" has no space; the noun sits before the colon
         token = token.rstrip("：:，,、；;。.")
         if len(token) < 2 or token.lower() in _STOPWORDS:
             continue
@@ -103,19 +104,20 @@ def _keywords(research_notes: str) -> list[str]:
 
 
 def strategy_cites(strategy_text: str, research_notes: str) -> bool:
-    """策略变更是否引用了研究结论：至少一个关键词出现在策略文本中。"""
+    """Whether a strategy change cites the research notes: at least one keyword appears in the strategy text."""
     text = (strategy_text or "").lower()
     return any(kw.lower() in text for kw in _keywords(research_notes or ""))
 
 
 class KnowledgeBase:
-    """模块知识库（§8.8）：跨任务记忆“什么改法灵过、什么坑踩过”。
+    """Module knowledge base (§8.8): cross-task memory of "what worked, what bit us".
 
-    YAML 结构：灵过/踩坑 各是 [{pattern, note}] 列表。
-    record 追加去重并落盘；inject 按任务规模返回注入文本。
+    YAML structure: worked/pitfall, each a list of {pattern, note}.
+    record appends with dedup and persists; inject returns injection text by
+    task size.
     """
 
-    KINDS = ("灵过", "踩坑")
+    KINDS = ("worked", "pitfall")
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -126,17 +128,17 @@ class KnowledgeBase:
         if loaded is None:
             return
         if not isinstance(loaded, dict):
-            raise ResearchError(f"知识库文件不是映射: {self.path}")
+            raise ResearchError(f"Knowledge base file is not a mapping: {self.path}")
         for kind in self.KINDS:
             entries = loaded.get(kind)
             if entries is None:
                 continue
             if not isinstance(entries, list):
-                raise ResearchError(f"知识库字段 {kind} 不是列表: {self.path}")
+                raise ResearchError(f"Knowledge base field {kind} is not a list: {self.path}")
             self._data[kind] = [dict(e) for e in entries]
 
     def record(self, kind: str, pattern: str, note: str) -> bool:
-        """追加一条经验，完全同条已存在则跳过。返回是否真的写入了。"""
+        """Append one experience entry; an exact duplicate is skipped. Returns whether it was actually written."""
         self._check_kind(kind)
         if any(
             e.get("pattern") == pattern and e.get("note") == note
@@ -148,27 +150,28 @@ class KnowledgeBase:
         return True
 
     def entries(self, kind: str) -> list[dict[str, str]]:
-        """返回某一类的所有条目（拷贝，防止外部改内部状态）。"""
+        """Return all entries of one kind (a copy, so outsiders cannot mutate internal state)."""
         self._check_kind(kind)
         return [dict(e) for e in self._data[kind]]
 
     def inject(self, size: str) -> str:
-        """按任务规模返回注入文本：trivial 空、small 踩坑前 2 条、medium 全量。
+        """Return injection text by task size: trivial empty, small first 2 pitfalls, medium full.
 
-        large 视同 medium（批下来之后至少是全量侦察）。
+        large is treated like medium (once approved, at least a full
+        reconnaissance).
         """
         key = str(size).strip().lower()
         if key == "trivial":
             return ""
         if key == "small":
-            sections = (("踩坑", self._data["踩坑"][:2]),)
+            sections = (("pitfall", self._data["pitfall"][:2]),)
         elif key in ("medium", "large"):
             sections = (
-                ("灵过", self._data["灵过"]),
-                ("踩坑", self._data["踩坑"]),
+                ("worked", self._data["worked"]),
+                ("pitfall", self._data["pitfall"]),
             )
         else:
-            raise ResearchError(f"未知任务规模: {size!r}，合法值: trivial/small/medium/large")
+            raise ResearchError(f"Unknown task size: {size!r}, valid values: trivial/small/medium/large")
 
         lines: list[str] = []
         for name, entries in sections:
@@ -180,7 +183,7 @@ class KnowledgeBase:
 
     def _check_kind(self, kind: str) -> None:
         if kind not in self.KINDS:
-            raise ResearchError(f"未知知识类型: {kind!r}，合法值: {list(self.KINDS)}")
+            raise ResearchError(f"Unknown knowledge kind: {kind!r}, valid values: {list(self.KINDS)}")
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,14 +193,14 @@ class KnowledgeBase:
         )
 
 
-# ---- §8.8 知识库自动提炼：从回归事件派生"灵过/踩坑" ------------------------
+# ---- §8.8 automatic knowledge base distillation: derive "worked/pitfall" from regression events ----
 
-# 日志里"像错误"的行：pytest 的 E 前缀、Traceback、常见错误词。
+# Lines that "look like errors": pytest's E prefix, Traceback, common error words.
 _ERROR_LINE_RE = re.compile(r"^E\b|Traceback|Error|ERROR|FAILED|Exception|失败")
 
 
 def _first_error_line(log_tail: str) -> str:
-    """取日志尾部第一个像错误的行；没有则退回首个非空行，再没有返回空串。"""
+    """Take the first error-like line of the log tail; fall back to the first non-empty line, else an empty string."""
     lines = [l.strip() for l in (log_tail or "").splitlines()]
     for line in lines:
         if line and _ERROR_LINE_RE.search(line):
@@ -209,10 +212,10 @@ def _first_error_line(log_tail: str) -> str:
 
 
 def _error_keyword(log_tail: str) -> str:
-    """从首个错误行截取关键词（首个词，剥掉 pytest 的 E 前缀与标点）。"""
+    """Cut a keyword from the first error line (first word, stripped of pytest's E prefix and punctuation)."""
     line = _first_error_line(log_tail)
     if not line:
-        return "未知错误"
+        return "unknown error"
     line = re.sub(r"^E\s+", "", line)
     tokens = line.split()
     keyword = tokens[0].strip("：:，,、；;。.`'\"()") if tokens else ""
@@ -220,13 +223,14 @@ def _error_keyword(log_tail: str) -> str:
 
 
 def derive_from_events(rows: Iterable[Any]) -> list[tuple[str, str, str]]:
-    """从回归事件行（task_id/attempt/green/log_tail）提炼知识库记录。
+    """Distill knowledge base records from regression event rows (task_id/attempt/green/log_tail).
 
-    每个任务按 attempt 排序后套三条规则，产出 (kind, pattern, note)：
-    - 红>=2 后转绿 → ("灵过", "曾两红后转绿：<首个错误行关键词>", note)；
-    - 首轮一次绿   → ("灵过", "首绿路径", "<task_id> 首轮即绿")；
-    - 红且从未绿   → ("踩坑", <首个错误行关键词>, note)。
-    一红后绿不出记录：没有稳定可提炼的模式。
+    Each task's rows are sorted by attempt and run through three rules,
+    producing (kind, pattern, note):
+    - green after >=2 reds   -> ("worked", "turned green after two reds: <first error keyword>", note);
+    - green on first attempt -> ("worked", "first-green path", "<task_id> green on first attempt");
+    - red and never green    -> ("pitfall", <first error keyword>, note).
+    One red then green yields no record: no stable pattern to distill.
     """
     by_task: dict[str, list[Any]] = {}
     for row in rows:
@@ -247,26 +251,27 @@ def derive_from_events(rows: Iterable[Any]) -> list[tuple[str, str, str]]:
 
         if any(greens) and reds_before_green >= 2:
             records.append((
-                "灵过",
-                f"曾两红后转绿：{_error_keyword(first_red_log)}",
-                f"任务 {task_id} 连红 {reds_before_green} 次后转绿，先查同关键词错误再动手",
+                "worked",
+                f"turned green after two reds: {_error_keyword(first_red_log)}",
+                f"Task {task_id} turned green after {reds_before_green} consecutive reds; check for the same error keyword before starting",
             ))
         elif any(greens) and reds_before_green == 0:
-            records.append(("灵过", "首绿路径", f"{task_id} 首轮即绿"))
+            records.append(("worked", "first-green path", f"{task_id} green on first attempt"))
         elif not any(greens):
             records.append((
-                "踩坑",
+                "pitfall",
                 _error_keyword(first_red_log),
-                f"任务 {task_id} 红 {len(attempts)} 次未绿，勿重复此路",
+                f"Task {task_id} stayed red across {len(attempts)} attempt(s); do not repeat this path",
             ))
     return records
 
 
 def sync_from_projection(kb: KnowledgeBase, projection: Projection, project: str) -> int:
-    """从投影拉回归事件 → 提炼 → kb.record 去重写入，返回本次新增条数。
+    """Pull regression events from the projection -> distill -> kb.record with dedup; return how many entries were added.
 
-    只同步 tasks.project 匹配的任务；未入 tasks 表的事件没有归属项目，
-    不参与本次同步。重复内容 record 自己去重，二次 sync 返回 0。
+    Only tasks whose tasks.project matches are synced; events not in the tasks
+    table have no owning project and are excluded. record dedupes identical
+    content, so a second sync returns 0.
     """
     rows = projection.conn.execute(
         """

@@ -1,8 +1,10 @@
-"""资源守护（guard，Windows）：进程快照、超限处置清单、过载判定。
+"""Resource guard (guard, Windows): process snapshot, over-limit action list, overload check.
 
-设计出处：design/03-详细设计.md §3.3——资源守护从 bigdev 原样保留：
-周期性看资源，先出处置清单（enforce，不真杀），真杀（terminate）
-留给运维确认清单后人工调用。只用标准库，Windows 的 tasklist/taskkill。
+Design source: design/03-detailed-design.md §3.3 — the resource guard carries over from
+bigdev unchanged: look at resources periodically, produce the action list first
+(enforce, no real kill); the real kill (terminate) is left for ops to invoke
+manually after confirming the list. Standard library only; Windows uses
+tasklist/taskkill.
 """
 from __future__ import annotations
 
@@ -14,11 +16,11 @@ import sys
 
 ProcessInfo = dict  # {"pid": int, "name": str, "memory_mb": float, "cmdline": str}
 
-ACTION_TERMINATE = "结束"
+ACTION_TERMINATE = "terminate"
 
 
 def _mem_usage_to_mb(text: str) -> float | None:
-    """'150,324 K' → MB 数；解析不了返回 None。"""
+    """'150,324 K' -> MB; returns None when unparseable."""
     digits = text.replace(",", "").replace("K", "").strip()
     try:
         return int(digits) / 1024
@@ -27,11 +29,12 @@ def _mem_usage_to_mb(text: str) -> float | None:
 
 
 def parse_tasklist(text: str) -> list[ProcessInfo]:
-    """解析 `tasklist /FO CSV /NH` 输出。
+    """Parse `tasklist /FO CSV /NH` output.
 
-    列序：映像名、PID、会话名、会话#、内存占用。cmdline 留空——
-    tasklist 不提供，需要时另走 wmic/Win32_Process。
-    坏行（残行/非数字 PID/非 K 内存）直接跳过。
+    Column order: image name, PID, session name, session#, memory usage. cmdline
+    is left empty — tasklist does not provide it; go through wmic/Win32_Process
+    when needed. Bad rows (truncated rows / non-numeric PID / non-K memory) are
+    skipped.
     """
     procs: list[ProcessInfo] = []
     for row in csv.reader(io.StringIO(text)):
@@ -51,7 +54,7 @@ def parse_tasklist(text: str) -> list[ProcessInfo]:
 
 
 def _parse_ps(text: str) -> list[ProcessInfo]:
-    """解析 `ps -eo pid,comm,rss --no-headers` 输出（POSIX 兜底，跨平台 CI 用）。"""
+    """Parse `ps -eo pid,comm,rss --no-headers` output (POSIX fallback, for cross-platform CI)."""
     procs: list[ProcessInfo] = []
     for line in text.splitlines():
         parts = line.split(None, 2)
@@ -69,7 +72,7 @@ def _parse_ps(text: str) -> list[ProcessInfo]:
 
 
 def snapshot() -> list[ProcessInfo]:
-    """当前进程快照（标准库实现）。Windows 走 tasklist，POSIX 走 ps，都不在则抛 OSError。"""
+    """Current process snapshot (standard-library implementation). Windows goes through tasklist, POSIX through ps; if neither exists, raises OSError."""
     encoding = locale.getpreferredencoding(False) or "utf-8"
     if sys.platform == "win32":
         result = subprocess.run(
@@ -83,9 +86,9 @@ def snapshot() -> list[ProcessInfo]:
 
 
 def enforce(snapshot: list[ProcessInfo], mem_limit_mb: float = 8192) -> list[dict]:
-    """超限进程列入处置清单（不真杀）。严格大于限值才算超。
+    """List over-limit processes for the action list (no real kill). Strictly greater than the limit counts.
 
-    返回 [{pid, name, memory_mb, action:"结束"}]。
+    Returns [{pid, name, memory_mb, action:"terminate"}].
     """
     return [
         {
@@ -100,9 +103,10 @@ def enforce(snapshot: list[ProcessInfo], mem_limit_mb: float = 8192) -> list[dic
 
 
 def overload(snapshot: list[ProcessInfo], total_mem_mb: float) -> bool:
-    """空闲内存低于总量 10% 判过载（空闲 = 总量 - 快照占用合计）。
+    """Free memory below 10% of total counts as overloaded (free = total - sum of snapshot usage).
 
-    比较写成 free*10 < total，避开 0.1 的浮点误差，恰好 10% 不算过载。
+    Written as free*10 < total to dodge the floating-point error of 0.1; exactly
+    10% does not count as overload.
     """
     used = sum(p["memory_mb"] for p in snapshot)
     free = total_mem_mb - used
@@ -110,7 +114,7 @@ def overload(snapshot: list[ProcessInfo], total_mem_mb: float) -> bool:
 
 
 def terminate(pid: int) -> None:
-    """真杀进程树。Windows 用 taskkill /T /F（连子进程），POSIX 用 kill（进程组由调用方负责）。只应在处置清单被人工确认后调用。"""
+    """Really kill the process tree. Windows uses taskkill /T /F (children included); POSIX uses kill (the process group is the caller's responsibility). Only invoke after the action list has been manually confirmed."""
     if sys.platform == "win32":
         subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True

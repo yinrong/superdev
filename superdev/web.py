@@ -1,9 +1,11 @@
-"""网页决策面：看板 + 一键拍板的极简 HTTP 服务（纯标准库）。
+"""Web decision surface: kanban + one-click deciding, a minimal HTTP service (pure standard library).
 
-设计出处：design/03-详细设计.md §5（决策面：等你拍板常驻顶部、一键拍板、
-默认只监听本机）与 §8.5（看板五列：待做/在做/等证据/卡住/已合并）。
-写路径只有一条：POST /decide → projection.decide → event_log.append(EXPERT_DECIDED)，
-台账写回由派发器消费事件完成，本模块不直接改台账。
+Design source: design/03-detailed-design.md §5 (decision surface: "decisions awaiting
+you" pinned at the top, one-click deciding, localhost-only by default) and §8.5
+(five kanban columns: Todo / In progress / Awaiting evidence / Stuck / Merged).
+There is exactly one write path: POST /decide -> projection.decide ->
+event_log.append(EXPERT_DECIDED); writing back to the ledger is done by the
+dispatcher consuming the event — this module never edits the ledger directly.
 """
 from __future__ import annotations
 
@@ -21,20 +23,22 @@ from superdev.events import EXPERT_DECIDED, EventLog
 from superdev.projection import Projection
 
 DEFAULT_PORT = 6010
-HOST = "127.0.0.1"  # §5 第 3 点：默认只监听本机
-CONTEXT_PREVIEW = 200  # /decisions 里 context_report 的截断长度
+HOST = "127.0.0.1"  # §5 point 3: localhost-only by default
+CONTEXT_PREVIEW = 200  # truncation length for context_report in /decisions
 
-# §8.5 看板五列：任务状态 → 列的归组。
-# paused 是"回原状态"的暂停态，归待做；gating 是门禁质检，仍算等证据；
-# escalated 等专家拍板，从工人视角看就是卡住；done 是 merged 之后的终态。
+# §8.5 five kanban columns: task status -> column grouping.
+# paused is a "back to the original status" pause state, grouped into Todo;
+# gating is quality-gate checking and still counts as Awaiting evidence;
+# escalated waits for an expert call, which from the worker's viewpoint is Stuck;
+# done is the terminal state after merged.
 KANBAN_COLUMNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("待做", ("draft", "ready", "assigned", "paused")),
-    ("在做", ("in_progress",)),
-    ("等证据", ("evidence_wait", "gating")),
-    ("卡住", ("stuck", "escalated")),
-    ("已合并", ("merged", "done")),
+    ("Todo", ("draft", "ready", "assigned", "paused")),
+    ("In progress", ("in_progress",)),
+    ("Awaiting evidence", ("evidence_wait", "gating")),
+    ("Stuck", ("stuck", "escalated")),
+    ("Merged", ("merged", "done")),
 )
-DONE_STATUSES = ("merged", "done")  # 进度条的"done"口径
+DONE_STATUSES = ("merged", "done")  # what the progress bar counts as "done"
 
 _STYLE = """\
 body{font-family:sans-serif;max-width:1100px;margin:16px auto;padding:0 12px;color:#222}
@@ -54,9 +58,9 @@ font-size:13px;word-break:break-all}
 
 
 def _card(task: dict) -> str:
-    """一张看板卡片。所有动态文本都过 html.escape，防注入。"""
+    """One kanban card. All dynamic text goes through html.escape to block injection."""
     red = (
-        f'<span class="red">红{task["red_count"]}</span>'
+        f'<span class="red">red {task["red_count"]}</span>'
         if (task["red_count"] or 0) > 0
         else ""
     )
@@ -74,7 +78,7 @@ def _card(task: dict) -> str:
 
 
 class DecisionWeb:
-    """把 Projection + EventLog 包成一个本机 HTTP 决策面。"""
+    """Wraps Projection + EventLog into a localhost HTTP decision surface."""
 
     def __init__(
         self,
@@ -85,27 +89,29 @@ class DecisionWeb:
     ):
         self.projection = projection
         self.event_log = event_log
-        # 台账路径留给派发器写回用（expert_decided → 新策略写回台账），这里只持有
+        # the ledger path is kept for the dispatcher's write-back
+        # (expert_decided -> new strategy written back to the ledger); here we only hold it
         self.ledger_plan_path = Path(ledger_plan_path)
-        # §5 第 3 点：远程访问加 token；None（默认）= 本机模式，行为完全不变
+        # §5 point 3: remote access adds a token; None (the default) = local mode, behavior fully unchanged
         self.auth_token = auth_token
         self._db_lock = threading.Lock()
         self._swap_to_threadsafe_conn()
         self._server: ThreadingHTTPServer | None = None
 
     def _swap_to_threadsafe_conn(self) -> None:
-        """ThreadingHTTPServer 每请求一线程，而 sqlite3 连接默认绑定创建线程。
+        """ThreadingHTTPServer uses one thread per request, while a sqlite3 connection binds to its creating thread by default.
 
-        Projection 自建的连接带 check_same_thread=True，在请求线程里用会抛
-        ProgrammingError。这里换成 check_same_thread=False 的连接（库文件里
-        schema 已就绪），配合 _db_lock 串行化所有访问。
+        Projection's self-built connection carries check_same_thread=True and
+        would raise ProgrammingError if used on a request thread. Swap it for a
+        check_same_thread=False connection (the schema is already in place in
+        the db file) and serialize all access with _db_lock.
         """
         conn = sqlite3.connect(self.projection.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         self.projection.conn.close()
         self.projection.conn = conn
 
-    # ---- 数据读取 -----------------------------------------------------
+    # ---- data reads -----------------------------------------------------
 
     def _tasks(self) -> list[dict]:
         with self._db_lock:
@@ -148,9 +154,9 @@ class DecisionWeb:
         column_of = {s: name for name, statuses in KANBAN_COLUMNS for s in statuses}
         columns = []
         for name, _ in KANBAN_COLUMNS:
-            # 未知状态兜底归"待做"，任务不在看板上消失
+            # unknown statuses fall back to Todo so a task never vanishes from the kanban
             cards = "".join(
-                _card(t) for t in tasks if column_of.get(t["status"], "待做") == name
+                _card(t) for t in tasks if column_of.get(t["status"], "Todo") == name
             )
             columns.append(f'<div class="col"><h3>{name}</h3>{cards}</div>')
         decisions_html = "".join(
@@ -159,47 +165,50 @@ class DecisionWeb:
             f"<pre>{html.escape((d['context_report'] or '')[:CONTEXT_PREVIEW])}</pre></div>"
             for d in pending
         )
-        # token 模式下把 token 藏进主页，方便前端拼 ?token= 链接（能过认证即可）
+        # in token mode, hide the token on the home page so the frontend can build
+        # ?token= links (passing auth is all that matters)
         token_input = (
             f'<input type="hidden" id="auth-token" value="{html.escape(self.auth_token)}">'
             if self.auth_token
             else ""
         )
         return f"""<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>superdev 决策面</title>
+<title>superdev decision console</title>
 <style>{_STYLE}</style>
 </head>
 <body>
-<h1>superdev 决策面</h1>
-<div class="banner">等你拍板 {len(pending)} 条</div>
-<p>项目进度：{done}/{total}（{pct}%）</p>
+<h1>superdev decision console</h1>
+<div class="banner">{len(pending)} decisions awaiting you</div>
+<p>Project progress: {done}/{total} ({pct}%)</p>
 <div class="bar"><div class="fill" style="width:{pct}%"></div></div>
 <div class="kanban">{''.join(columns)}</div>
-<h2>待拍板决策</h2>
+<h2>Pending decisions</h2>
 {token_input}
-{decisions_html or "<p>没有等待中的决策。</p>"}
+{decisions_html or "<p>No decisions waiting.</p>"}
 </body>
 </html>"""
 
-    # ---- HTTP 装配 ----------------------------------------------------
+    # ---- HTTP assembly ----------------------------------------------------
 
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         web = self
 
         class Handler(BaseHTTPRequestHandler):
-            # 测试和常驻进程都不需要访问日志，静默掉
+            # neither tests nor the long-running process need access logs; silence them
             def log_message(self, format: str, *args: Any) -> None:
                 return
 
             def _authorized(self) -> bool:
-                """token 模式下所有路由先验凭证（§5 第 3 点）；本机模式直接放行。
+                """In token mode every route checks credentials first (§5 point 3); in local mode everything passes.
 
-                凭证二选一：Authorization: Bearer <token> 头，或 ?token=<token>
-                查询参数。compare_digest 防时序侧信道。不符返回 401 + 中文错误。
+                Credentials come in one of two forms: an Authorization: Bearer
+                <token> header, or a ?token=<token> query parameter.
+                compare_digest guards against timing side channels. A mismatch
+                returns 401 + an error message.
                 """
                 if web.auth_token is None:
                     return True
@@ -216,8 +225,8 @@ class DecisionWeb:
                     401,
                     {
                         "ok": False,
-                        "error": "认证失败：token 缺失或不正确"
-                        "（Authorization: Bearer <token> 或 ?token=<token>）",
+                        "error": "authentication failed: token missing or incorrect"
+                        " (Authorization: Bearer <token> or ?token=<token>)",
                     },
                 )
                 return False
@@ -233,14 +242,14 @@ class DecisionWeb:
                 elif path == "/tasks":
                     self._send_json(200, web._tasks_payload())
                 else:
-                    self._send_json(404, {"error": f"未知路径：{path}"})
+                    self._send_json(404, {"error": f"unknown path: {path}"})
 
             def do_POST(self) -> None:
                 if not self._authorized():
                     return
                 path = self.path.split("?", 1)[0]
                 if path != "/decide":
-                    self._send_json(404, {"error": f"未知路径：{path}"})
+                    self._send_json(404, {"error": f"unknown path: {path}"})
                     return
                 try:
                     length = int(self.headers.get("Content-Length") or 0)
@@ -250,17 +259,17 @@ class DecisionWeb:
                 try:
                     body: Any = json.loads(raw.decode("utf-8")) if raw else {}
                 except (ValueError, UnicodeDecodeError):
-                    self._send_json(400, {"ok": False, "error": "请求体不是合法 JSON"})
+                    self._send_json(400, {"ok": False, "error": "request body is not valid JSON"})
                     return
                 if not isinstance(body, dict):
-                    self._send_json(400, {"ok": False, "error": "请求体应为 JSON 对象"})
+                    self._send_json(400, {"ok": False, "error": "request body must be a JSON object"})
                     return
                 decision_id = body.get("decision_id")
                 choice = body.get("choice")
                 note = str(body.get("note") or "")
                 if not decision_id or not choice:
                     self._send_json(
-                        400, {"ok": False, "error": "缺少 decision_id 或 choice"}
+                        400, {"ok": False, "error": "missing decision_id or choice"}
                     )
                     return
                 try:
@@ -269,7 +278,8 @@ class DecisionWeb:
                             str(decision_id), str(choice), note
                         )
                 except (LookupError, ValueError) as exc:
-                    # 已拍板/不存在，都是 400 + 中文原因（projection 抛的就是中文）
+                    # already decided / nonexistent: both return 400 + the reason
+                    # (projection's message is passed through as-is)
                     self._send_json(400, {"ok": False, "error": str(exc)})
                     return
                 web.event_log.append(
@@ -308,11 +318,12 @@ class DecisionWeb:
         return Handler
 
     def serve(self, port: int = DEFAULT_PORT, block: bool = False) -> ThreadingHTTPServer:
-        """起 HTTP 服务，返回 server 对象。
+        """Start the HTTP service and return the server object.
 
-        block=False（默认）在后台线程跑，调 server.shutdown() +
-        server.server_close() 即停；block=True 阻塞当前线程直到 shutdown。
-        port=0 让系统挑空闲端口，实际端口看 server.server_address[1]。
+        block=False (the default) runs it on a background thread; call
+        server.shutdown() + server.server_close() to stop it. block=True blocks
+        the current thread until shutdown. port=0 lets the system pick a free
+        port; the actual port is server.server_address[1].
         """
         server = ThreadingHTTPServer((HOST, port), self._build_handler())
         server.daemon_threads = True

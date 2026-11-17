@@ -1,12 +1,13 @@
-# 测试夹具：自定义状态枚举——证明枚举以文件头 statuses 为准，
-# ready 在默认枚举里合法，但这里不在 [todo, doing, done] 中，必须判非法。
+# Test fixture: custom status enumeration — proves the enumeration comes
+# from the file header statuses. "ready" is legal under the default
+# enumeration, but here it is not in [todo, doing, done] and must be rejected.
 project: demo
 statuses: [todo, doing, done]
 tasks:
   - id: A1
-    title: 自定义枚举内合法
+    title: Legal within the custom enumeration
     status: todo
 
   - id: A2
-    title: 不在自定义枚举内
+    title: Outside the custom enumeration
     status: ready

@@ -1,9 +1,11 @@
-# 脱敏仿制的稀疏 bigdev 台账：只保留最小可识别字段（version/module/tasks 的 id/todo），
-# status 大量缺省、无 workers 无 objective，验证兼容读入不炸、缺省全部兜底
+# Sanitized replica of a sparse bigdev ledger: only the minimal recognizable
+# fields survive (version/module/tasks with id/todo). Statuses are mostly
+# missing, no workers, no objective — verifies compat reading neither crashes
+# nor loses the all-default fallbacks (legacy Chinese enum 待办 kept verbatim).
 version: v0.9_2026-01-01
 module: demo
 tasks:
   - id: t-a
-    todo: demo/第一件事.md
+    todo: demo/first-thing.md
   - id: t-b
     status: 待办

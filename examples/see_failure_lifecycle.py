@@ -1,17 +1,22 @@
-"""任务失败生命周期演示：两红换方向转绿、两红卡住升级、决策链完整性。
+"""Task failure-lifecycle demo: two reds then a cited direction goes green, two
+reds without citation get stuck and escalated, plus decision-chain integrity.
 
-零依赖离线演示（对应详细设计 §1.1 红绿循环、§3 状态机、§8.3 事件链）：
-不调 AI、不联网、不碰真 git，一切发生在 tempfile 临时目录里，秒级跑完。
+Zero-dependency offline demo (detailed design section 1.1 red-green loop,
+section 3 state machine, section 8.3 event chain): no AI calls, no network,
+no real git — everything happens in a tempfile directory and finishes in
+seconds.
 
-运行：python examples/see_failure_lifecycle.py（退出码 0）
+Run: python examples/see_failure_lifecycle.py (exit code 0)
 
-输出标签全部英文（[RED] [ROLLBACK] [RESEARCH] [VERIFY] 等），
-旁白也是英文，纯英文读者零障碍；state.handle_event 返回的中文动作
-文案用本地对照表 ACTION_EN 翻译，不修改 superdev 包本身。
+Output labels are all English ([RED] [ROLLBACK] [RESEARCH] [VERIFY] etc.),
+and so are the narrated lines; Chinese action labels returned by
+state.handle_event are translated through a local ACTION_EN table, without
+modifying the superdev package itself.
 
-三个假件是 tests/fake_engine.py 的自带轻量副本（避免 examples 去 import
-tests 包）：DemoEngine 对应 EchoEngine、DemoRunner 对应 ScriptedRunner、
-DemoGit 对应 FakeGit，语义相同，只多了每步一句英文旁白。
+The three fakes are lightweight local copies of tests/fake_engine.py (so the
+example does not import the tests package): DemoEngine mirrors EchoEngine,
+DemoRunner mirrors ScriptedRunner, DemoGit mirrors FakeGit, with one extra
+English narration line per step.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-# 脚本住在 examples/ 里，把仓库根目录挂上 sys.path 才能拿到本仓库的 superdev 包
+# The script lives in examples/; put the repo root on sys.path to import this repo s superdev package
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -40,11 +45,11 @@ from superdev.ledger import Plan, Task, save_plan, update_task_status  # noqa: E
 from superdev.redgreen import REASON_CITED, RedGreenLoop, TaskSpec  # noqa: E402
 from superdev.research import KnowledgeBase, strategy_cites  # noqa: E402
 
-# 两个模块各自的"上一次全绿"提交（假 sha，演示用）
+# Last-green commit per module (fake shas, demo only)
 GREEN_LOGIN = "1a2b3c4d" + "0" * 32
 GREEN_API = "5e6f7a8b" + "0" * 32
 
-# state.handle_event 返回的动作是中文（管理端口径），演示打印用这份英文对照
+# state.handle_event actions are English now; this table is kept for safety
 ACTION_EN = {
     TASK_CREATED: "checks passed, refresh projection",
     WORKER_IDLE: "dispatcher assigns",
@@ -56,12 +61,12 @@ ACTION_EN = {
 
 
 def say(tag: str, msg: str) -> None:
-    """演示旁白：每步一行 [TAG] description。"""
+    """Narrate: one [TAG] description line per step."""
     print(f"[{tag}] {msg}")
 
 
 class DemoEngine:
-    """EchoEngine 副本：按脚本出每轮产物摘要，顺带念一句旁白。"""
+    """EchoEngine copy: scripted round summaries plus a narration line."""
 
     def __init__(self, outputs: list[str]):
         self._pending = list(outputs)
@@ -75,7 +80,7 @@ class DemoEngine:
 
 
 class DemoRunner:
-    """ScriptedRunner 副本：按脚本判绿。绿红只由回归脚本说了算，工人不自报。"""
+    """ScriptedRunner copy: scripted green/red verdicts; only the regression script decides, never the worker."""
 
     def __init__(self, script: list[bool], log_tail: str):
         self._script = list(script)
@@ -94,7 +99,7 @@ class DemoRunner:
 
 
 class DemoGit:
-    """FakeGit 副本：同名三方法，记录调用序列并念出纪律动作。"""
+    """FakeGit copy: same three methods, records call sequences and narrates discipline actions."""
 
     def __init__(self, sha: str):
         self.sha = sha
@@ -116,7 +121,7 @@ class DemoGit:
 
 
 def dispatch_to_in_progress(log: EventLog, task_id: str, status: dict[str, str]) -> None:
-    """派工小跑：WORKER_IDLE 派工 → assigned，再程序迁移进 in_progress。"""
+    """Dispatch hop: WORKER_IDLE dispatches to assigned, then a program transition into in_progress."""
     to, _ = state.handle_event(WORKER_IDLE, status[task_id])
     log.append(WORKER_IDLE, {"task_id": task_id})
     status[task_id] = to
@@ -128,7 +133,7 @@ def dispatch_to_in_progress(log: EventLog, task_id: str, status: dict[str, str])
 
 def main() -> int:
     try:
-        sys.stdout.reconfigure(errors="replace")  # 任何控制台编码都不许炸
+        sys.stdout.reconfigure(errors="replace")  # never crash on console encoding
     except AttributeError:
         pass
 
@@ -150,7 +155,7 @@ def main() -> int:
     say("LEDGER", "plan.yml written with 2 tasks: " + ", ".join(t.id for t in plan.tasks))
 
     kb = KnowledgeBase(tmp / "kb.yml")
-    kb.record("踩坑", "duplicate-submit", "duplicate submits under concurrent login; do the idempotency key before the lock")
+    kb.record("pitfall", "duplicate-submit", "duplicate submits under concurrent login; do the idempotency key before the lock")
     say("KB", "Module knowledge base records 1 pitfall: duplicate-submit -> idempotency key before the lock")
 
     status: dict[str, str] = {t.id: "draft" for t in plan.tasks}
@@ -160,7 +165,7 @@ def main() -> int:
         status[t.id] = to
         say(TASK_CREATED, f"{t.id}: draft -> {to} ({ACTION_EN[TASK_CREATED]})")
 
-    # ---- 任务一：两红后换方向（策略引用研究）→ 新回合转绿 -------------------
+    # ---- Task 1: two reds, cited new direction - round goes green --------
     print()
     print("--- Task 1 fix-login-bug: two reds, new cited direction, then green ---")
     spec1 = TaskSpec(
@@ -221,7 +226,7 @@ def main() -> int:
     status["fix-login-bug"] = to
     say(ALL_GREEN, f"fix-login-bug: gating -> {to} ({ACTION_EN[ALL_GREEN]}) - even green must pass the gate to merge")
 
-    # ---- 任务二：两红且不引用研究 → 卡住、升级、专家拍板 --------------------
+    # ---- Task 2: two reds, no citation -, escalated, expert decides -----
     print()
     print("--- Task 2 refactor-api: two reds, no citation, stuck and escalated ---")
     spec2 = TaskSpec(
@@ -231,7 +236,7 @@ def main() -> int:
         title="refactor API error handling",
         size="medium",
         research_notes="error-code: the error-code table is scattered across three modules",
-        strategy="",  # 没有换方向，自然没有策略变更
+        strategy="",  # no direction change, hence no strategy change
         strategy_changes=0,
     )
     print()
@@ -268,7 +273,7 @@ def main() -> int:
     update_task_status(plan_path, "fix-login-bug", status["fix-login-bug"])
     say("LEDGER", "Statuses written back to plan.yml: fix-login-bug=merged, refactor-api=ready")
 
-    # ---- 收尾：决策链完整性 --------------------------------------------------
+    # ---- Wrap-up: decision-chain integrity ------------------------------------
     print()
     print("--- Wrap-up: decision-chain integrity ---")
     ok, first_bad = log.verify()
@@ -280,7 +285,7 @@ def main() -> int:
     say("TRAIL", f"Git discipline trail: {n_checkout} branches cut from green, {n_reset} red rollbacks, no exceptions")
 
     print()
-    print("Demo complete: green never merges without gating, stuck never spins idle (绿的不合入不存在，卡的不空转)")
+    print("Demo complete: green never merges without gating, stuck never spins idle")
     return 0
 
 

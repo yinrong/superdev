@@ -1,9 +1,9 @@
-"""评审工人（§8.7）的测试：规则底座、引擎叠加、gate 布尔。"""
+"""Tests for the review worker (§8.7): rule base, engine layering, gate boolean."""
 
 from superdev.engines import EchoEngine
 from superdev.reviewer import ReviewResult, Reviewer
 
-# 删了一个测试文件的 diff
+# a diff that deletes a test file
 DELETE_TEST_DIFF = """\
 diff --git a/tests/test_old.py b/tests/test_old.py
 deleted file mode 100644
@@ -14,7 +14,7 @@ deleted file mode 100644
 -def test_old(): assert True
 """
 
-# 删了一个普通源码文件的 diff（不该拦）
+# a diff that deletes an ordinary source file (must not block)
 DELETE_SRC_DIFF = """\
 diff --git a/superdev/legacy.py b/superdev/legacy.py
 deleted file mode 100644
@@ -38,7 +38,7 @@ TODO_DIFF = """\
 +++ b/superdev/util.py
 @@ -1,1 +1,2 @@
  context line
-+value = compute()  # TODO: 换成常量
++value = compute()  # TODO: replace with a constant
 """
 
 
@@ -68,17 +68,17 @@ class TestRulesOnly:
     def test_big_diff_over_500_lines_is_blocked(self):
         r = Reviewer().review(_big_diff(501))
         assert r.verdict == "needs_fix"
-        assert any("拆小" in c for c in r.comments)
+        assert any("split" in c for c in r.comments)
         assert any("501" in c for c in r.comments)
 
     def test_exactly_500_added_lines_passes(self):
-        # 边界：规则是"超过 500"，恰好 500 行不拦
+        # boundary: the rule is "over 500", so exactly 500 lines does not block
         r = Reviewer().review(_big_diff(500))
         assert r.verdict == "pass"
 
     def test_todo_in_added_line_is_hint_not_block(self):
         r = Reviewer().review(TODO_DIFF)
-        assert r.verdict == "pass"  # 只提示，不翻 verdict
+        assert r.verdict == "pass"  # a hint only, never flips the verdict
         assert any("TODO/FIXME" in c for c in r.comments)
 
     def test_fixme_in_added_line_also_hinted(self):
@@ -105,26 +105,26 @@ class TestRulesOnly:
 
 class TestEngineLayering:
     def test_engine_analysis_prepended_as_comment(self):
-        engine = EchoEngine(["命名不一致：load 与 fetch 混用"])
+        engine = EchoEngine(["inconsistent naming: load vs fetch mixed"])
         r = Reviewer(engine).review(CLEAN_DIFF)
         assert r.verdict == "pass"
-        assert r.comments[0] == "引擎分析：命名不一致：load 与 fetch 混用"
+        assert r.comments[0] == "engine analysis: inconsistent naming: load vs fetch mixed"
         assert len(engine.calls) == 1
-        assert engine.calls[0][1] == CLEAN_DIFF  # diff 作为上下文给了引擎
+        assert engine.calls[0][1] == CLEAN_DIFF  # the diff is handed to the engine as context
 
     def test_engine_analysis_plus_blocking_rule_stack(self):
-        engine = EchoEngine(["缺测试覆盖"])
+        engine = EchoEngine(["missing test coverage"])
         r = Reviewer(engine).review(DELETE_TEST_DIFF)
         assert r.verdict == "needs_fix"
-        assert r.comments[0].startswith("引擎分析：")
-        assert any("删测试文件" in c for c in r.comments)
+        assert r.comments[0].startswith("engine analysis:")
+        assert any("deleted test file" in c for c in r.comments)
 
     def test_engine_failure_falls_back_to_rules(self):
-        # EchoEngine 脚本演完抛 RuntimeError，评审照常出规则结论
+        # the EchoEngine script runs out and raises RuntimeError; the review still returns its rule verdict
         r = Reviewer(EchoEngine([])).review(DELETE_TEST_DIFF)
         assert r.verdict == "needs_fix"
-        assert any("删测试文件" in c for c in r.comments)
-        assert not any(c.startswith("引擎分析：") for c in r.comments)
+        assert any("deleted test file" in c for c in r.comments)
+        assert not any(c.startswith("engine analysis:") for c in r.comments)
 
     def test_engine_empty_output_adds_no_comment(self):
         r = Reviewer(EchoEngine([""])).review(CLEAN_DIFF)
@@ -138,7 +138,7 @@ class TestGate:
         assert Reviewer().gate(result) is True
 
     def test_gate_false_for_needs_fix(self):
-        result = ReviewResult(verdict="needs_fix", comments=["删测试文件：x"])
+        result = ReviewResult(verdict="needs_fix", comments=["deleted test file: x"])
         assert Reviewer().gate(result) is False
 
     def test_gate_end_to_end_with_review(self):

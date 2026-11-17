@@ -1,14 +1,18 @@
-"""CI 适配器（详细设计 §8.4）：合并请求开出后盯远端流水线，结果走本地同一条回喂路。
+"""CI adapter (detailed design §8.4): once a merge request is open, watch the remote pipeline and route the result through the same local feed-back path.
 
-本模块不做真实 HTTP 轮询：watch 回调是注入点，返回 CIStatus 三态。
-接 GitHub Actions / GitLab CI 时在这里实现具体 watch：
-  - GitHub Actions：用 `gh api repos/{owner}/{repo}/actions/runs?event=pull_request`
-    轮询最新 run 的 status/conclusion（success/failure/timing-out 映射本模块三态），
-    失败日志取 `/actions/runs/{run_id}/jobs` 的 step 结论与末段输出；
-  - GitLab CI：`GET /api/v4/projects/{id}/pipelines?ref={branch}` 轮询 status，
-    失败日志取 `/pipelines/{pipeline_id}/jobs` 里 failed job 的 trace 末段。
-两个实现都只是"查状态 + 拼日志尾"的薄函数，装进 CIAdapter(watch=...) 即可，
-poll_once 的事件记录与回喂决策全部复用，本地回归和远端 CI 用同一条失败处理路径。
+This module does no real HTTP polling: the watch callback is the injection point
+and returns a three-state CIStatus. To hook up GitHub Actions / GitLab CI,
+implement the concrete watch here:
+  - GitHub Actions: poll the latest run's status/conclusion via
+    `gh api repos/{owner}/{repo}/actions/runs?event=pull_request`
+    (success/failure/timing-out map onto this module's three states); on failure,
+    take step conclusions and tail output from `/actions/runs/{run_id}/jobs`;
+  - GitLab CI: poll status via `GET /api/v4/projects/{id}/pipelines?ref={branch}`;
+    on failure, take the trace tail of the failed job in `/pipelines/{pipeline_id}/jobs`.
+Both implementations are thin "query status + assemble log tail" functions: drop
+one into CIAdapter(watch=...) and poll_once's event recording and feed-back
+decisions all carry over, so local regression and remote CI share one
+failure-handling path.
 """
 
 from __future__ import annotations
@@ -38,31 +42,33 @@ CI_PENDING = "pending"
 CI_SUCCESS = "success"
 CI_FAILURE = "failure"
 
-# poll_once 的口头结论：给派发器决定下一步（绿=可合，回喂=修，等待=继续轮询）
-VERDICT_GREEN = "绿"
-VERDICT_FEEDBACK = "回喂"
-VERDICT_WAIT = "等待"
+# poll_once's plain verdict: lets the dispatcher pick the next step (green = mergeable, feedback = fix, wait = keep polling)
+VERDICT_GREEN = "green"
+VERDICT_FEEDBACK = "feedback"
+VERDICT_WAIT = "wait"
 
 
 @dataclass(frozen=True)
 class CIStatus:
-    """一次远端流水线查询结果：三态 + 失败日志尾。"""
+    """One remote pipeline query result: three states + failure log tail."""
 
     state: str
     log_tail: str = ""
 
 
 class CIAdapter:
-    """合并请求轮询器：远端 CI 红/绿映射为本地事件，同状态连续出现不重复记。"""
+    """Merge request poller: remote CI red/green maps onto local events; the same state seen twice in a row is not recorded twice."""
 
     def __init__(self, watch: Callable[[], CIStatus]):
         self.watch = watch
-        # mr_url -> 上次轮询到的状态；只抑制"同 mr 连续同终态"的重复事件，
-        # 中间出现过 pending（新推了一轮 CI）后，终态再次落盘会被视为新结果
+        # mr_url -> state seen on the last poll; this only suppresses repeated
+        # events for "the same mr staying in the same terminal state". Once a
+        # pending shows up in between (a fresh CI round was pushed), the terminal
+        # state landing again counts as a new result
         self._last_state: dict[str, str] = {}
 
     def poll_once(self, mr_url: str, event_log: EventLog) -> str:
-        """查一次远端状态并落事件：success → ALL_GREEN；failure → ROUND_RED（带日志尾）。"""
+        """Poll the remote state once and record an event: success -> ALL_GREEN; failure -> ROUND_RED (with log tail)."""
         status = self.watch()
         state = status.state
         if state in (CI_SUCCESS, CI_FAILURE) and self._last_state.get(mr_url) != state:
@@ -81,11 +87,11 @@ class CIAdapter:
         return VERDICT_WAIT
 
 
-# ---------- 真实 API 轮询 watch（详细设计 §8.4；离线测试 monkeypatch urlopen） ----------
+# ---------- real-API polling watches (detailed design §8.4; offline tests monkeypatch urlopen) ----------
 
 
 def _get_json(url: str, headers: dict[str, str]) -> Any:
-    """GET 一个 JSON 接口；HTTPError 原样抛给调用方归一为 failure。"""
+    """GET a JSON endpoint; HTTPError propagates to the caller as-is, to be normalized into failure."""
     req = urllib.request.Request(url, headers=headers, method="GET")
     with urllib.request.urlopen(req, timeout=30) as resp:
         body = resp.read().decode("utf-8")
@@ -93,11 +99,12 @@ def _get_json(url: str, headers: dict[str, str]) -> Any:
 
 
 class GithubCIWatch:
-    """GitHub Actions 轮询：取 branch 最新一条 workflow run 的 status/conclusion。
+    """GitHub Actions polling: take the latest workflow run's status/conclusion for the branch.
 
-    completed+success → success；completed+其他 → failure（log_tail 写
-    "run {id} conclusion={conclusion}"）；未 completed → pending；HTTPError →
-    failure 且 log_tail 写状态码。有 token 时带 Authorization: Bearer 头。
+    completed+success -> success; completed+anything else -> failure (log_tail
+    reads "run {id} conclusion={conclusion}"); not completed -> pending;
+    HTTPError -> failure with the status code in log_tail. When a token is set,
+    an Authorization: Bearer header goes along.
     """
 
     def __init__(
@@ -126,7 +133,7 @@ class GithubCIWatch:
             return CIStatus(CI_FAILURE, log_tail=f"GitHub API HTTP {e.code}: {url}")
         runs = data.get("workflow_runs") or [] if isinstance(data, dict) else []
         if not runs:
-            return CIStatus(CI_PENDING, log_tail=f"branch {self.branch} 没有 workflow run")
+            return CIStatus(CI_PENDING, log_tail=f"branch {self.branch} has no workflow run")
         run = runs[0]
         if run.get("status") != "completed":
             return CIStatus(CI_PENDING, log_tail=f"run {run.get('id')} status={run.get('status')}")
@@ -136,11 +143,12 @@ class GithubCIWatch:
 
 
 class GitlabCIWatch:
-    """GitLab CI 轮询：取 ref 最新一条 pipeline 的 status。
+    """GitLab CI polling: take the latest pipeline's status for the ref.
 
-    success → success；failed/canceled → failure；running/pending → pending
-    （其余未知状态按 pending 处理，log_tail 只写 pipeline 状态，不拉 jobs）；
-    HTTPError（如 404）→ failure 且 log_tail 写状态码。token 走 PRIVATE-TOKEN 头。
+    success -> success; failed/canceled -> failure; running/pending -> pending
+    (any other unknown state is treated as pending, and log_tail records only the
+    pipeline status, without pulling jobs); HTTPError (e.g. 404) -> failure with
+    the status code in log_tail. The token travels via the PRIVATE-TOKEN header.
     """
 
     _FAILURE_STATES = frozenset({"failed", "canceled", "cancelled"})
@@ -170,7 +178,7 @@ class GitlabCIWatch:
         except urllib.error.HTTPError as e:
             return CIStatus(CI_FAILURE, log_tail=f"GitLab API HTTP {e.code}: {url}")
         if not isinstance(pipelines, list) or not pipelines:
-            return CIStatus(CI_PENDING, log_tail=f"ref {self.ref} 没有 pipeline")
+            return CIStatus(CI_PENDING, log_tail=f"ref {self.ref} has no pipeline")
         pipeline = pipelines[0]
         state = str(pipeline.get("status") or "")
         tail = f"pipeline {pipeline.get('id')} status={state}"

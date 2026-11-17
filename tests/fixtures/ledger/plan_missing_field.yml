@@ -1,4 +1,4 @@
-# 测试夹具：任务缺 title（必填字段）
+# Test fixture: task missing its title (a required field)
 project: demo
 statuses: [draft, ready]
 tasks:

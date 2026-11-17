@@ -1,4 +1,4 @@
-"""superdev.state 的测试：迁移表、非法迁移、paused 往返、事件到迁移映射。"""
+"""Tests for superdev.state: transition table, illegal transitions, paused round-trips, event-to-transition mapping."""
 
 import pytest
 
@@ -6,7 +6,7 @@ from superdev import events as ev
 from superdev import state
 from superdev.state import ALLOWED, can_transition, handle_event, illegal
 
-# §3.1 主干：一条从 draft 走到 done 的完整路径
+# §3.1 mainline: one complete path from draft to done
 HAPPY_PATH = [
     ("draft", "ready"),
     ("ready", "assigned"),
@@ -21,36 +21,36 @@ HAPPY_PATH = [
 class TestAllowedTransitions:
     def test_happy_path(self):
         for cur, nxt in HAPPY_PATH:
-            assert can_transition(cur, nxt), f"{cur}->{nxt} 应合法"
+            assert can_transition(cur, nxt), f"{cur}->{nxt} should be legal"
 
     def test_in_progress_branches(self):
-        # 两败卡住与暂停都从 in_progress 出发，但不许跳过门禁直接合并
+        # Two-failure stall and pause both leave from in_progress, but skipping the gate to merge is forbidden
         assert can_transition("in_progress", "stuck")
         assert can_transition("in_progress", "paused")
         assert not can_transition("in_progress", "merged")
         assert not can_transition("in_progress", "ready")
 
     def test_evidence_wait_branches(self):
-        # 证据合格进门禁，不合格退回 stuck，都不许直接回 ready
+        # Good evidence enters the gate, bad evidence returns to stuck; neither goes straight back to ready
         assert can_transition("evidence_wait", "gating")
         assert can_transition("evidence_wait", "stuck")
         assert not can_transition("evidence_wait", "ready")
 
     def test_stuck_and_escalated_paths(self):
-        assert can_transition("stuck", "ready")        # 经 repro_split 回炉
-        assert can_transition("stuck", "escalated")    # 管理端判断超出能力
-        assert can_transition("escalated", "ready")    # 专家拍板带新策略回炉
+        assert can_transition("stuck", "ready")        # back to work via repro_split
+        assert can_transition("stuck", "escalated")    # manager judges it beyond capability
+        assert can_transition("escalated", "ready")    # expert decision returns it with a new strategy
         assert not can_transition("stuck", "in_progress")
         assert not can_transition("escalated", "stuck")
 
     @pytest.mark.parametrize("cur,nxt", [
-        ("draft", "assigned"),        # 没经过 ready 就想派工
-        ("ready", "in_progress"),     # 没经过 assigned 就想开工
-        ("gating", "done"),           # 必须先 merged
-        ("merged", "ready"),          # 合并后不许回炉
-        ("done", "draft"),            # 终态只能暂停，不能重来
-        ("paused", "paused"),         # 恢复必须回一个真实原状态
-        ("draft", "draft"),           # 自迁移无意义
+        ("draft", "assigned"),        # wants dispatch without going through ready
+        ("ready", "in_progress"),     # wants to start without going through assigned
+        ("gating", "done"),           # must merge first
+        ("merged", "ready"),          # no rework after merge
+        ("done", "draft"),            # terminal status can only pause, not restart
+        ("paused", "paused"),         # resume must return to a real original status
+        ("draft", "draft"),           # self-transition is meaningless
     ])
     def test_illegal_samples(self, cur, nxt):
         assert not can_transition(cur, nxt)
@@ -59,30 +59,30 @@ class TestAllowedTransitions:
     def test_unknown_status_rejected(self):
         assert not can_transition("bogus", "ready")
         assert not can_transition("ready", "bogus")
-        assert "未知状态" in illegal("bogus", "ready")
+        assert "Unknown status" in illegal("bogus", "ready")
 
     def test_illegal_message_names_both_ends_and_targets(self):
         msg = illegal("draft", "merged")
         assert "draft" in msg and "merged" in msg
-        # 错误信息要给出合法目标，管理端才不用翻文档
+        # The error must list valid targets so the manager never has to check the docs
         assert "ready" in msg
 
 
 class TestPaused:
     def test_every_base_status_can_pause(self):
         for s in state.BASE_STATUSES:
-            assert can_transition(s, "paused"), f"{s} 应能暂停"
+            assert can_transition(s, "paused"), f"{s} should be pausable"
 
     def test_paused_returns_to_every_base_status(self):
         for s in state.BASE_STATUSES:
-            assert can_transition("paused", s), f"恢复应能回 {s}"
+            assert can_transition("paused", s), f"resume should reach {s}"
 
     def test_pause_roundtrip_via_illegal(self):
         assert illegal("in_progress", "paused") is None
         assert illegal("paused", "in_progress") is None
 
     def test_paused_not_in_ledger_enumeration(self):
-        # paused 是运行期叠加态，不进台账 statuses（ledger.DEFAULT_STATUSES）
+        # paused is a runtime overlay, never listed in ledger statuses (ledger.DEFAULT_STATUSES)
         assert "paused" not in ALLOWED["paused"]
         assert set(ALLOWED) == set(state.ALL_STATUSES)
 
@@ -95,27 +95,27 @@ class TestHandleEvent:
             assert act == action
 
     def test_every_rule_transition_is_in_allowed_table(self):
-        # 事件映射不得绕过 ALLOWED（ROUND_RED 是"不迁移"，from==to 不查表）
+        # Event mappings must not bypass ALLOWED (ROUND_RED is a "no transition", from==to, not table-checked)
         for kind, (want, to, _action) in state.EVENT_RULES.items():
             if want != to:
-                assert can_transition(want, to), f"{kind} 的 {want}->{to} 不在迁移表"
+                assert can_transition(want, to), f"{kind}'s {want}->{to} is not in the transition table"
 
     def test_round_red_stays_in_progress(self):
-        # round_red_1 口径：只回滚回喂，不迁移（两败另发 TASK_STUCK）
-        assert handle_event(ev.ROUND_RED, "in_progress") == ("in_progress", "回滚回喂")
+        # round_red_1 semantics: roll back and re-feed only, no transition (two failures send TASK_STUCK separately)
+        assert handle_event(ev.ROUND_RED, "in_progress") == ("in_progress", "roll back and re-feed")
 
     def test_metrics_stall_is_project_level(self):
         for s in ("in_progress", "gating", "paused"):
             new_status, action = handle_event(ev.METRICS_STALL, s)
-            assert new_status == s  # 项目级事件，任务状态不动
-            assert "项目级" in action
+            assert new_status == s  # project-level event; task status is untouched
+            assert "project-level" in action
 
     def test_wrong_status_returns_error(self):
         new_status, err = handle_event(ev.WORKER_IDLE, "draft")
         assert new_status is None
-        assert "ready" in err  # 错误要说出事件要求的状态
+        assert "ready" in err  # the error must name the status the event requires
 
     def test_unknown_kind_returns_error(self):
         new_status, err = handle_event("NOT_A_EVENT", "draft")
         assert new_status is None
-        assert "未知事件类型" in err
+        assert "Unknown event kind" in err

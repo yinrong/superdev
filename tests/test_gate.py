@@ -1,7 +1,8 @@
-"""superdev.gate 的测试：质检管线顺序执行、任一步红即短路、配置解析、当 RegressionRunner 用。
+"""Tests for superdev.gate: the quality pipeline runs steps in order, any red step short-circuits, config parsing, and use as a RegressionRunner.
 
-全文件 subprocess 用 monkeypatch 顶替（另留一条真跑 python 的小型集成用例），
-不依赖 lint / build 工具是否安装，也不碰真 git。
+All subprocess calls in this file are replaced via monkeypatch (plus one small
+real-python integration case), so nothing depends on lint / build tools being
+installed, and no real git is touched.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ def _proc(code: int, stdout: str = "", stderr: str = "") -> subprocess.Completed
 
 @dataclass
 class FakeRun:
-    """按脚本回放 CompletedProcess 或异常，记录每条命令、cwd 与超时。"""
+    """Replays CompletedProcess objects or exceptions from a script, recording each command, cwd and timeout."""
 
     script: list = field(default_factory=list)
     calls: list[tuple[list[str], object, int]] = field(default_factory=list)
@@ -41,7 +42,7 @@ def _pipeline(*steps: GateStep) -> GatePipeline:
     return GatePipeline(list(steps))
 
 
-# ---------- run：顺序执行与红即短路 ----------
+# ---------- run: in-order execution and short-circuit on red ----------
 
 
 def test_all_steps_pass_returns_green_with_gate_sha(tmp_path, monkeypatch):
@@ -72,7 +73,7 @@ def test_first_step_red_short_circuits(tmp_path, monkeypatch):
 
     assert result.green is False
     assert result.commit_sha == ""
-    assert len(fake.calls) == 1  # 第一步红，第二步不再执行
+    assert len(fake.calls) == 1  # step 1 went red, step 2 never runs
     assert "[gate:lint]" in result.log_tail
     assert "E501 line too long" in result.log_tail
 
@@ -89,8 +90,8 @@ def test_middle_step_red_short_circuits(tmp_path, monkeypatch):
     result = pipeline.run(str(tmp_path))
 
     assert result.green is False
-    assert len(fake.calls) == 2  # 第 2 步红，第 3 步不再执行
-    assert "[gate:typecheck]" in result.log_tail  # 失败步骤可定位
+    assert len(fake.calls) == 2  # step 2 went red, step 3 never runs
+    assert "[gate:typecheck]" in result.log_tail  # the failing step is locatable
     assert "TypeError: boom" in result.log_tail
 
 
@@ -102,19 +103,19 @@ def test_step_timeout_is_red_and_names_the_step(tmp_path, monkeypatch):
     result = pipeline.run(str(tmp_path))
 
     assert result.green is False
-    assert "超时" in result.log_tail
-    assert "build" in result.log_tail  # 步骤名和命令都在诊断里
+    assert "timed out" in result.log_tail
+    assert "build" in result.log_tail  # step name and command both appear in the diagnostic
 
 
 def test_step_not_executable_is_red_not_crash(tmp_path, monkeypatch):
     def fake_run(cmd, **kwargs):
-        raise OSError("[WinError 2] 系统找不到指定的文件。")
+        raise OSError("[WinError 2] The system cannot find the file specified.")
 
     monkeypatch.setattr(gate_mod.subprocess, "run", fake_run)
     result = _pipeline(GateStep("lint", ["no-such-tool"])).run(str(tmp_path))
 
     assert result.green is False
-    assert "无法执行" in result.log_tail
+    assert "cannot execute" in result.log_tail
 
 
 def test_red_log_tail_keeps_last_200_lines(tmp_path, monkeypatch):
@@ -125,10 +126,10 @@ def test_red_log_tail_keeps_last_200_lines(tmp_path, monkeypatch):
     result = _pipeline(GateStep("test", ["pytest"])).run(str(tmp_path))
 
     assert result.green is False
-    assert result.log_tail.splitlines() == lines[-200:]  # 只留末 200 行，头部行也被挤掉
+    assert result.log_tail.splitlines() == lines[-200:]  # keep only the last 200 lines; head lines get squeezed out
 
 
-# ---------- from_config：默认与自定义 ----------
+# ---------- from_config: defaults and custom ----------
 
 
 def test_from_config_missing_file_defaults_to_single_pytest(tmp_path):
@@ -161,18 +162,18 @@ def test_from_config_rejects_malformed(tmp_path):
         GatePipeline.from_config(tmp_path)
 
 
-# ---------- 兼容性：直接当 RegressionRunner 喂给 RedGreenLoop ----------
+# ---------- compatibility: fed straight into RedGreenLoop as the RegressionRunner ----------
 
 
 def test_gate_pipeline_serves_as_runner_in_redgreen_loop(tmp_path, monkeypatch):
     monkeypatch.setattr(gate_mod.subprocess, "run", FakeRun([_proc(0)]))
-    runner = GatePipeline.from_config(tmp_path)  # 默认 pytest 一步
-    engine = EchoEngine(["搞定"])
+    runner = GatePipeline.from_config(tmp_path)  # the default single pytest step
+    engine = EchoEngine(["done"])
     git_ops = GitOps(dry_run=True)
     log = EventLog(tmp_path / "events.jsonl")
     loop = RedGreenLoop(engine, runner, git_ops, log)
 
-    result = loop.round(TaskSpec(id="T14", module=str(tmp_path), base="abc123", title="管线"))
+    result = loop.round(TaskSpec(id="T14", module=str(tmp_path), base="abc123", title="pipeline"))
 
     assert result.green is True
     assert result.attempts == 1
@@ -182,7 +183,8 @@ def test_gate_pipeline_serves_as_runner_in_redgreen_loop(tmp_path, monkeypatch):
 
 
 def test_real_subprocess_green_then_red(tmp_path):
-    # 真跑一次 python 验证 subprocess 参数在真环境可用（Windows / UTF-8 输出捕获）
+    # really run python once to prove the subprocess arguments work in a real
+    # environment (Windows / UTF-8 output capture)
     green = _pipeline(GateStep("ok", ["python", "-c", "print('hi')"])).run(str(tmp_path))
     assert green.green is True
     assert green.commit_sha == "gate"

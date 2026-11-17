@@ -1,0 +1,276 @@
+project: superdev-dev
+kind: single-repo software
+version: v0.1.0
+statuses:
+- draft
+- ready
+- assigned
+- in_progress
+- evidence_wait
+- stuck
+- escalated
+- gating
+- merged
+- done
+modules:
+- repo: .
+  max_workers: 4
+  regression: python -m pytest -q
+tasks:
+- id: T01-ledger
+  title: Ledger loader (agent.yml / plan.yml / status.yml read+write)
+  status: done
+  size: medium
+  files:
+  - superdev/ledger.py
+  - tests/test_ledger.py
+  - tests/fixtures/ledger/
+  research:
+  - Read design/03-detailed-design.md §4 and the "ledger" entry in the README glossary
+  depends_on: []
+- id: T02-events
+  title: Event log with tamper-evident hash chain (append-only + chained signatures + verification)
+  status: done
+  size: medium
+  files:
+  - superdev/events.py
+  - tests/test_events.py
+  research:
+  - Read design/03-detailed-design.md §8.3
+  depends_on: []
+- id: T03-research
+  title: Research budget tiers and module knowledge base (trivial/small/medium/large + worked/pitfall injection)
+  status: done
+  size: medium
+  files:
+  - superdev/research.py
+  - tests/test_research.py
+  research:
+  - Read design/03-detailed-design.md §1.4 and §8.8
+  depends_on: []
+- id: T04-check
+  title: Contract checker check (8 rules - count, grouping, acyclic deps, ready count, ownership, bounds, strategy cites research, repro script, budget tiers)
+  status: done
+  size: medium
+  files:
+  - superdev/check.py
+  - tests/test_check.py
+  research:
+  - Read design/03-detailed-design.md §2
+  depends_on:
+  - T01-ledger
+- id: T05-projection-state
+  title: SQLite projection (five tables) + state machine transition table + event-consume dispatch
+  status: done
+  size: large
+  files:
+  - superdev/projection.py
+  - superdev/state.py
+  - tests/test_projection.py
+  - tests/test_state.py
+  research:
+  - Read design/03-detailed-design.md §3 and §4
+  depends_on:
+  - T01-ledger
+  - T02-events
+- id: T06-redgreen
+  title: Red-green discipline loop + engine adapter interface (green-point branch / revert on red / research after two failures / evidence reporting)
+  status: done
+  size: medium
+  files:
+  - superdev/redgreen.py
+  - superdev/engines.py
+  - tests/test_redgreen.py
+  research:
+  - Read design/03-detailed-design.md §1.1, §1.2 and §1.3
+  depends_on:
+  - T01-ledger
+  - T03-research
+- id: T07-cli-hooks
+  title: CLI entry points (check/status/round/import-spec) + manager-side hook adjudication scripts
+  status: done
+  size: medium
+  files:
+  - superdev_cli.py
+  - superdev/hooks.py
+  - tests/test_cli.py
+  - tests/test_hooks.py
+  research:
+  - Read design/03-detailed-design.md §2 and §8.1
+  depends_on:
+  - T04-check
+  - T05-projection-state
+- id: T08-supervise-guard
+  title: Supervisor (stall counting / escalation report / recovery) and resource guard (timeout kill / orphan cleanup)
+  status: done
+  size: medium
+  files:
+  - superdev/supervise.py
+  - superdev/guard.py
+  - tests/test_supervise.py
+  - tests/test_guard.py
+  research:
+  - Read design/03-detailed-design.md §3.3 and §6
+  depends_on:
+  - T05-projection-state
+- id: T09-web
+  title: Web decision board (projects / tasks / pending decisions, one-click decision POST to ledger then events)
+  status: done
+  size: medium
+  files:
+  - superdev/web.py
+  - tests/test_web.py
+  research:
+  - Read design/03-detailed-design.md §5 and §8.5
+  depends_on:
+  - T05-projection-state
+- id: T10-contracts
+  title: Manager/worker contract docs (superdev-manage.md / superdev-work.md) + import-spec spec-kit adapter
+  status: done
+  size: small
+  files:
+  - commands/superdev-manage.md
+  - commands/superdev-work.md
+  - superdev/importspec.py
+  - tests/test_importspec.py
+  research:
+  - Read design/03-detailed-design.md §8.1 and the bigdev commands style
+  depends_on:
+  - T04-check
+- id: T11-e2e
+  title: End-to-end test - a fake engine walks one task through its full lifecycle (create, dispatch, two reds, research, green, merge, projection refresh)
+  status: done
+  size: medium
+  files:
+  - tests/test_e2e.py
+  - tests/fake_engine.py
+  research:
+  - Read the data-flow section of design/02-architecture.md
+  depends_on:
+  - T05-projection-state
+  - T06-redgreen
+  - T07-cli-hooks
+- id: T12-readme
+  title: Repo README (quick start - first task to a fully green merge in ten minutes)
+  status: done
+  size: small
+  files:
+  - README.md
+  research:
+  - Read the positioning section of design/01-positioning.md
+  depends_on:
+  - T11-e2e
+- id: T13-cli-importspec
+  title: Add import-spec subcommand to the CLI (integration gap reported by the T10 worker)
+  status: done
+  size: small
+  files:
+  - superdev_cli.py
+  - tests/test_cli.py
+  research:
+  - Read the import_spec signature in superdev/importspec.py
+  depends_on:
+  - T10-contracts
+- id: T14-gate-pipeline
+  title: Quality gate pipeline (§8.2 - per-module configurable gates (lint,typecheck,test,build), any red step means regression red)
+  status: done
+  size: medium
+  files:
+  - superdev/gate.py
+  - tests/test_gate.py
+  research:
+  - Read the runner interface in superdev/redgreen.py and design/03-detailed-design.md §8.2
+  depends_on:
+  - T06-redgreen
+- id: T15-clarify-reviewer
+  title: Requirements-clarification step (§8.6) + reviewer worker (§8.7 - diff passes AI review before entering the gate)
+  status: done
+  size: medium
+  files:
+  - superdev/clarify.py
+  - superdev/reviewer.py
+  - tests/test_clarify.py
+  - tests/test_reviewer.py
+  research:
+  - Read design/03-detailed-design.md §8.6 and §8.7, and the Engine protocol in superdev/engines.py
+  depends_on:
+  - T06-redgreen
+- id: T16-ci-adapter
+  title: CI adapter (§8.4 - watch pipeline results, feed failure logs back through the same red-green path)
+  status: done
+  size: small
+  files:
+  - superdev/ciadapter.py
+  - tests/test_ciadapter.py
+  research:
+  - Read the event constants in superdev/events.py and design/03-detailed-design.md §8.4
+  depends_on:
+  - T02-events
+- id: T17-kb-derive
+  title: Automatic knowledge-base distillation (§8.8 addendum - distill worked/pitfall from regression events, research once and reuse project-wide)
+  status: done
+  size: small
+  files:
+  - superdev/research.py
+  - tests/test_research.py
+  research:
+  - Read the existing KnowledgeBase in superdev/research.py and the regression_events table in superdev/projection.py
+  depends_on:
+  - T03-research
+  - T05-projection-state
+- id: T18-bigdev-compat
+  title: Legacy bigdev ledger ingestion (design §7 - old format read as-is, green point initialized on first run)
+  status: done
+  size: small
+  files:
+  - superdev/ledger.py
+  - tests/test_ledger.py
+  - tests/fixtures/ledger/bigdev/
+  research:
+  - Read real ledger samples under D:\devs\dev4\bigdev\agents (read-only)
+  depends_on:
+  - T01-ledger
+- id: T19-ci-real-api
+  title: Real CI API polling (Watch implementations for GitHub Actions and GitLab CI, tests mocked offline)
+  status: done
+  size: medium
+  files:
+  - superdev/ciadapter.py
+  - tests/test_ciadapter.py
+  research:
+  - Response fields of the GitHub REST actions/runs and GitLab pipelines APIs
+  depends_on:
+  - T16-ci-adapter
+- id: T20-web-auth
+  title: Web decision board token auth (design §5.3 - with a token set every route requires Bearer, default local mode unchanged)
+  status: done
+  size: small
+  files:
+  - superdev/web.py
+  - tests/test_web.py
+  research:
+  - Read the existing handler structure in superdev/web.py
+  depends_on:
+  - T09-web
+- id: T21-rough-edges
+  title: Rough edges - real-kill safety test for guard.terminate, supervision report takes repro commands from the ledger (drop TBD placeholders), README boundary update
+  status: done
+  size: medium
+  files:
+  - superdev/guard.py
+  - superdev/supervise.py
+  - tests/test_guard.py
+  - tests/test_supervise.py
+  - README.md
+  research:
+  - Read escalation_report in superdev/supervise.py and the existing style of tests/test_guard.py
+  depends_on:
+  - T08-supervise-guard
+- id: T22-publish
+  title: Publish to github.com/yinrong/superdev (create repo in browser + PAT + push + API facade + three CI fix-red rounds to all green)
+  status: done
+  size: medium
+  files:
+  - README.md
+  research: []
+  depends_on: []

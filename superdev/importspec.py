@@ -1,8 +1,9 @@
-"""spec-kit 目录导入：plan.md / tasks.md 任务清单转成 派工计划.yml（设计文档 §8.1）。
+"""spec-kit directory import: turn plan.md / tasks.md checklists into plan.yml (design doc §8.1).
 
-spec-kit 管写规范，superdev 管执行落地，本模块只做两者的串联转换：
-markdown 清单行（`- [ ] 标题` 或 `1. 标题`）逐条转台账任务，
-粒度交给 check_plan 把关；超出导入上限的直接抛 ImportError 打回重拆。
+spec-kit owns writing the spec and superdev owns executing it; this module only
+converts between the two: markdown checklist lines (`- [ ] title` or `1. title`)
+become ledger tasks one by one, granularity is policed by check_plan, and
+anything over the import cap raises ImportError to be bounced back for splitting.
 """
 from __future__ import annotations
 
@@ -14,24 +15,25 @@ from superdev.ledger import Plan, Task, save_plan
 
 __all__ = ["SpecImportError", "import_spec"]
 
-# 与 check.MAX_TASKS 一致的缺省上限；§8.1 的建议下限（少于它只是警告，不拦截）
+# default cap matching check.MAX_TASKS; §8.1's recommended minimum (below it is only a warning, never a block)
 MAX_TASKS = 50
 MIN_RECOMMENDED = 10
 
-# 两种清单行：未勾选的 checkbox（`- [ ]`，已勾选的 [x] 跳过），或行首编号（1. / 1、 / 1)）
+# two checklist line shapes: an unchecked checkbox (`- [ ]`; a checked [x] is skipped),
+# or a leading number (1. / 1、 / 1))
 _CHECKBOX_RE = re.compile(r"^\s*[-*]\s+\[\s\]\s*(.+?)\s*$")
 _NUMBERED_RE = re.compile(r"^\s*\d+[.、)]\s*(.+?)\s*$")
 
-# spec-kit 约定的清单文件，plan.md 优先
+# the checklist files the spec-kit convention prescribes; plan.md wins
 _SPEC_FILES = ("plan.md", "tasks.md")
 
 
 class SpecImportError(ImportError):
-    """spec-kit 目录无法导入：找不到清单、清单里没有任务、或任务数超上限要先拆小。"""
+    """A spec-kit directory cannot be imported: no checklist found, no tasks in the checklist, or the task count exceeds the cap and must be split first."""
 
 
 def _size_of(title: str) -> str:
-    """按标题长度粗分粒度：<20 字 trivial，<60 字 small，否则 medium。"""
+    """Rough granularity cut by title length: <20 chars trivial, <60 small, otherwise medium."""
     if len(title) < 20:
         return "trivial"
     if len(title) < 60:
@@ -45,12 +47,13 @@ def _find_spec_file(spec_dir: Path) -> Path:
         if candidate.is_file():
             return candidate
     raise SpecImportError(
-        f"spec-kit 目录里找不到 plan.md 或 tasks.md：{spec_dir}（先按 spec-kit 规范补任务清单再导入）"
+        f"no plan.md or tasks.md found in spec-kit directory: {spec_dir}"
+        " (add a task checklist per the spec-kit convention before importing)"
     )
 
 
 def _parse_titles(text: str) -> list[str]:
-    """抽取任务标题：`- [ ] 标题` 与 `1. 标题` 各认一行；已勾选（[x]）与普通文字不算。"""
+    """Extract task titles: `- [ ] title` and `1. title` each match one line; checked items ([x]) and plain prose don't count."""
     titles: list[str] = []
     for line in text.splitlines():
         m = _CHECKBOX_RE.match(line)
@@ -67,13 +70,15 @@ def import_spec(
     repo: str | Path = ".",
     max_tasks: int = MAX_TASKS,
 ) -> Plan:
-    """读 spec-kit 风格目录，转成派工计划落盘，返回 Plan。
+    """Read a spec-kit style directory, convert it into a dispatch plan on disk, and return the Plan.
 
-    - 任务 id 从 spec-001 起编号，status 一律 ready，depends_on 空；
-      size 按标题长度粗分（trivial/small/medium）。
-    - 任务数超过 max_tasks 抛 ImportError（先拆小再导入）；清单缺失或没有任务行同样抛。
-    - 生成后立即 save_plan 落盘，并跑 check.check_plan；
-      结果挂在返回值的 ``warnings`` 属性上（空列表 = 校验干净，警告不打断导入）。
+    - task ids number from spec-001, status is always ready, depends_on is empty;
+      size is a rough cut by title length (trivial/small/medium).
+    - More than max_tasks tasks raises ImportError (split first, then import);
+      a missing checklist or a checklist with no task lines raises too.
+    - save_plan writes the file immediately, then check.check_plan runs;
+      the results hang off the returned object's ``warnings`` attribute
+      (an empty list = clean validation; warnings never interrupt the import).
     """
     spec_dir = Path(spec_dir)
     out_plan_path = Path(out_plan_path)
@@ -82,11 +87,11 @@ def import_spec(
     titles = _parse_titles(spec_file.read_text(encoding="utf-8"))
     if not titles:
         raise SpecImportError(
-            f"任务清单是空的：{spec_file}（至少要有一行 `- [ ] 标题` 或 `1. 标题`）"
+            f"task checklist is empty: {spec_file} (need at least one `- [ ] title` or `1. title` line)"
         )
     if len(titles) > max_tasks:
         raise SpecImportError(
-            f"任务数量 {len(titles)} 超过导入上限 {max_tasks} 个：先拆小再导入（§8.1）"
+            f"task count {len(titles)} exceeds the import cap of {max_tasks}: split into smaller tasks before importing (§8.1)"
         )
 
     tasks = [
@@ -114,8 +119,9 @@ def import_spec(
     warnings = check.check_plan(plan, knowledge_dir=repo)
     if len(tasks) < MIN_RECOMMENDED:
         warnings.append(
-            f"警告：任务数量 {len(tasks)} 少于 {MIN_RECOMMENDED} 个，粒度可能偏大，"
-            "建议管理端进一步拆小（§8.1）"
+            f"warning: task count {len(tasks)} is fewer than the recommended minimum"
+            f" {MIN_RECOMMENDED}; granularity may be too coarse, the manager side"
+            " should split further (§8.1)"
         )
     plan.warnings = warnings
     return plan

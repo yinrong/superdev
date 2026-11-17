@@ -1,10 +1,13 @@
-"""需求澄清器（§8.6）：管理端拆任务前先过一道澄清。
+"""Requirement clarifier (§8.6): the manager side runs a clarification pass before splitting tasks.
 
-规则式底座：需求少于 10 字或含"可能/大概/再说/尽量"等模糊词 →
-需要澄清；next_question 一次只问一个问题、附 2-4 个选项。
-engine 是升级位：注入后由引擎改写问题文本，引擎缺席或抛错回退规则式。
-澄清记录由 format_records 拼成 markdown，append_records 负责追加落盘，
-写入路径由调用方传入。
+Rule-based base: a requirement shorter than 10 characters or containing a Chinese
+vague word such as 可能/大概/再说/尽量 needs clarification; next_question asks
+exactly one question at a time, with 2-4 options attached. Note the vague-word
+list stays Chinese on purpose: this detector targets Chinese vagueness, and its
+behavior must not change. The engine is the upgrade slot: once injected, it
+rewrites the question text; with the engine absent or failing, the rule version
+carries on. Clarification records are assembled into markdown by format_records,
+append_records appends them to disk, and the write path is passed in by the caller.
 """
 
 from __future__ import annotations
@@ -19,63 +22,70 @@ __all__ = ["Question", "Clarifier"]
 
 @dataclass(frozen=True)
 class Question:
-    """一个澄清问题：问题文本 + 候选选项。"""
+    """One clarification question: question text + candidate options."""
 
     text: str
     options: list[str] = field(default_factory=list)
 
 
 class Clarifier:
-    """需求澄清器：判定 → 提问 → 记答案，循环到需求清晰为止。"""
+    """Requirement clarifier: judge -> ask -> record the answer, looping until the requirement is clear."""
 
+    # Chinese vague-word list (kept Chinese by design: the detector targets Chinese vague words)
     VAGUE_WORDS = ("可能", "大概", "再说", "尽量", "也许", "差不多")
-    MIN_LENGTH = 10  # 少于 10 个字视为描述不足
+    MIN_LENGTH = 10  # fewer than 10 characters counts as under-specified
 
-    # 每个模糊词对应的界定选项（2-4 个），答案直接替换模糊词本身。
+    # Boundary options per vague word (2-4 each); the answer directly replaces the vague word itself.
     _OPTIONS = {
-        "可能": ("必须支持", "明确不支持", "由配置项决定"),
-        "大概": ("给出确切数值或范围", "按最小可用实现", "不限定"),
-        "再说": ("本期就要做", "本期不做，只留接口", "拆成独立任务"),
-        "尽量": ("必须做到，进验收标准", "尽力即可，不验收", "做到八成即可"),
-        "也许": ("必须支持", "明确不支持", "由配置项决定"),
-        "差不多": ("给出确切数值或范围", "按最小可用实现", "不限定"),
+        "可能": ("must be supported", "explicitly unsupported", "decided by a config option"),
+        "大概": ("give an exact value or range", "implement the minimum usable version", "unconstrained"),
+        "再说": ("do it this iteration", "skip this iteration, leave an interface only", "split into a separate task"),
+        "尽量": ("must be done, part of acceptance criteria", "best effort, not acceptance-tested", "eighty percent is enough"),
+        "也许": ("must be supported", "explicitly unsupported", "decided by a config option"),
+        "差不多": ("give an exact value or range", "implement the minimum usable version", "unconstrained"),
     }
-    _SHORT_OPTIONS = ("补充要做什么与验收标准", "补充使用场景与边界", "维持原样，按字面实现")
+    _SHORT_OPTIONS = (
+        "add what to build and the acceptance criteria",
+        "add usage scenarios and boundaries",
+        "keep it as-is, implement literally",
+    )
 
     def __init__(self, engine: Engine | None = None):
         self.engine = engine
-        self.records: list[dict[str, object]] = []  # 已落下的问答记录
+        self.records: list[dict[str, object]] = []  # Q&A records collected so far
 
     def needs_clarification(self, requirement: str) -> bool:
-        """需求少于 10 字或含模糊词 → True。"""
+        """Requirement shorter than 10 characters or containing a vague word -> True."""
         text = (requirement or "").strip()
         if len(text) < self.MIN_LENGTH:
             return True
         return any(word in text for word in self.VAGUE_WORDS)
 
     def next_question(self, requirement: str) -> Question:
-        """针对第一个命中的模糊词提问；无模糊词但过短则问需求目标。
+        """Ask about the first vague word hit; with no vague word but too short, ask what the goal is.
 
-        需求已清晰时没有可问的，抛 ValueError（调用方应先判 needs_clarification）。
+        A clear requirement has nothing to ask about, so raise ValueError
+        (callers should check needs_clarification first).
         """
         text = (requirement or "").strip()
         if not self.needs_clarification(text):
-            raise ValueError("需求已清晰，无需提问")
+            raise ValueError("requirement is already clear, nothing to ask")
         word = next((w for w in self.VAGUE_WORDS if w in text), None)
         if word is not None:
-            question = Question(f"「{word}」如何界定？", list(self._OPTIONS[word]))
+            question = Question(f'How should "{word}" be defined?', list(self._OPTIONS[word]))
         else:
             question = Question(
-                f"需求只有 {len(text)} 个字（少于 {self.MIN_LENGTH}），具体要做什么？",
+                f"The requirement is only {len(text)} characters (fewer than {self.MIN_LENGTH}); what exactly should be built?",
                 list(self._SHORT_OPTIONS),
             )
         return self._refine_by_engine(question, text)
 
     def record_answer(self, requirement: str, q: Question, answer: str) -> str:
-        """记下问答并返回澄清后的需求文本。
+        """Record the Q&A and return the clarified requirement text.
 
-        合并规则：有模糊词时用答案替换首个该模糊词（需求随之去模糊）；
-        短需求没有词可替换，把答案作为补充追加在括号里。
+        Merge rule: with a vague word present, the answer replaces the first
+        occurrence of that word (de-vaguing the requirement); a short requirement
+        has no word to replace, so the answer is appended as a parenthesized supplement.
         """
         text = (requirement or "").strip()
         answer = (answer or "").strip()
@@ -83,7 +93,7 @@ class Clarifier:
         if word is not None:
             merged = text.replace(word, answer, 1)
         elif text:
-            merged = f"{text}（补充：{answer}）"
+            merged = f"{text} (supplement: {answer})"
         else:
             merged = answer
         self.records.append(
@@ -92,19 +102,19 @@ class Clarifier:
         return merged
 
     def format_records(self) -> str:
-        """把澄清记录拼成 markdown；没有记录返回空串。"""
+        """Assemble the clarification records into markdown; with no records, return an empty string."""
         if not self.records:
             return ""
-        lines = ["## 需求澄清记录", ""]
+        lines = ["## Requirement clarification log", ""]
         for r in self.records:
-            opts = " / ".join(r["options"]) if r["options"] else "（无选项）"
-            lines.append(f"- 问：{r['question']}")
-            lines.append(f"  选项：{opts}")
-            lines.append(f"  答：{r['answer']}")
+            opts = " / ".join(r["options"]) if r["options"] else "(no options)"
+            lines.append(f"- Q: {r['question']}")
+            lines.append(f"  options: {opts}")
+            lines.append(f"  A: {r['answer']}")
         return "\n".join(lines) + "\n"
 
     def append_records(self, path: str | Path) -> str:
-        """把 markdown 澄清记录追加到调用方给的路径，返回写入的文本。"""
+        """Append the markdown clarification records to the caller-given path, returning the text written."""
         md = self.format_records()
         if md:
             target = Path(path)
@@ -114,14 +124,15 @@ class Clarifier:
         return md
 
     def _refine_by_engine(self, question: Question, requirement: str) -> Question:
-        """升级位：引擎在场就请它改写问题文本；失败或空输出回退规则式。"""
+        """Upgrade slot: with an engine present, ask it to rewrite the question text; on failure or empty output, fall back to the rule version."""
         if self.engine is None:
             return question
         try:
             refined = self.engine.run_round(
-                "把澄清问题改写得更具体", f"需求：{requirement}\n问题：{question.text}"
+                "Rewrite the clarification question to be more specific",
+                f"requirement: {requirement}\nquestion: {question.text}",
             )
-        except Exception:  # 引擎不可用不阻断澄清，规则式兜底
+        except Exception:  # an unavailable engine must not stall clarification; the rule version carries it
             return question
         refined = (refined or "").strip()
         return Question(refined, question.options) if refined else question

@@ -1,11 +1,13 @@
-"""质检管线（详细设计 §8.2）：每模块可配置的多步门禁，直接当 RegressionRunner 用。
+"""Quality-gate pipeline (detailed design §8.2): per-module configurable multi-step gating, used directly as a RegressionRunner.
 
-"全绿才合 main"的绿不再只看单一回归：模块目录 gate.yml 声明
-lint / typecheck / test / build 等步骤，顺序执行，任一步红等同回归红，
-走同一套回滚回喂流程（RedGreenLoop 原样消费本类，无须适配）。
-无 gate.yml 的模块默认只跑一步 python -m pytest -q。
+The "green" in "all green before merging to main" no longer rests on a single
+regression run: a module's gate.yml declares steps such as lint / typecheck /
+test / build, executed in order. Any red step equals a red regression and goes
+through the same rollback-and-feed-back flow (RedGreenLoop consumes this class
+as-is, no adapter needed). A module without gate.yml defaults to a single step:
+python -m pytest -q.
 
-subprocess 通过模块属性引用调用，测试可 monkeypatch gate.subprocess.run。
+subprocess is referenced through the module attribute so tests can monkeypatch gate.subprocess.run.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ __all__ = [
     "GatePipeline",
 ]
 
-# 无 gate.yml 时的默认门禁：只跑一步全量回归
+# default gate when there is no gate.yml: a single full-regression step
 DEFAULT_TEST_COMMAND = ["python", "-m", "pytest", "-q"]
 DEFAULT_STEP_TIMEOUT = 120
 GATE_CONFIG_FILENAME = "gate.yml"
@@ -36,7 +38,7 @@ GATE_CONFIG_FILENAME = "gate.yml"
 
 @dataclass(frozen=True)
 class GateStep:
-    """一步质检：名字、命令行、超时秒数。"""
+    """One quality-check step: name, command line, timeout in seconds."""
 
     name: str
     command: list[str]
@@ -44,18 +46,18 @@ class GateStep:
 
 
 def _text(value: object) -> str:
-    """超时异常里的半截输出可能是 str / bytes / None，只留 str。"""
+    """The partial output inside a timeout exception may be str / bytes / None; keep only str."""
     return value if isinstance(value, str) else ""
 
 
 class GatePipeline:
-    """顺序执行质检步骤的回归器：实现 RegressionRunner 协议，判绿不靠工人自报。"""
+    """A regressor that runs quality-check steps in order: implements the RegressionRunner protocol, so green is never self-reported by the worker."""
 
     def __init__(self, steps: list[GateStep]):
         self.steps = list(steps)
 
     def run(self, module_dir: str) -> RegressionResult:
-        """跑完整管线：任一步红立即短路返回红，全过返回绿（commit_sha 固定 "gate"）。"""
+        """Run the whole pipeline: any red step short-circuits to red; all steps pass returns green (commit_sha fixed to "gate")."""
         for step in self.steps:
             ok, output = self._execute(step, module_dir)
             if not ok:
@@ -63,7 +65,7 @@ class GatePipeline:
         return RegressionResult(green=True, commit_sha="gate")
 
     def _execute(self, step: GateStep, module_dir: str) -> tuple[bool, str]:
-        """执行一步，返回 (是否过, 失败时的诊断文本)。诊断头部带步骤名，回喂时可定位。"""
+        """Execute one step, returning (passed, diagnostic text on failure). The diagnostic header carries the step name so feed-back can locate it."""
         header = f"[gate:{step.name}] "
         try:
             proc = subprocess.run(
@@ -77,11 +79,12 @@ class GatePipeline:
             )
         except subprocess.TimeoutExpired as e:
             partial = "\n".join(p for p in (_text(e.stdout), _text(e.stderr)) if p)
-            msg = header + f"超时（{step.timeout}s）：{' '.join(step.command)}"
+            msg = header + f"timed out ({step.timeout}s): {' '.join(step.command)}"
             return False, f"{msg}\n{partial}" if partial else msg
         except OSError as e:
-            # 可执行文件缺失等：管线红，而不是把异常抛进红绿循环
-            return False, header + f"无法执行：{' '.join(step.command)}：{e}"
+            # missing executable and the like: the pipeline goes red instead of
+            # letting the exception blow up the red-green loop
+            return False, header + f"cannot execute: {' '.join(step.command)}: {e}"
         if proc.returncode != 0:
             combined = "\n".join(
                 p for p in ((proc.stdout or ""), (proc.stderr or "")) if p
@@ -92,10 +95,11 @@ class GatePipeline:
 
     @classmethod
     def from_config(cls, module_dir: str | Path) -> "GatePipeline":
-        """读模块目录 gate.yml（steps: [{name, command, timeout?}]）。
+        """Read the module directory's gate.yml (steps: [{name, command, timeout?}]).
 
-        无文件时默认只有一步 test: python -m pytest -q；
-        文件存在但格式不对直接 ValueError，宁可开工失败也不带病判绿。
+        Without the file, default to a single test step: python -m pytest -q;
+        if the file exists but is malformed, raise ValueError right away — better
+        to fail at start-up than to judge green while broken.
         """
         path = Path(module_dir) / GATE_CONFIG_FILENAME
         if not path.exists():
@@ -107,14 +111,14 @@ class GatePipeline:
     @staticmethod
     def _parse_steps(data: object, path: Path) -> list[GateStep]:
         if not isinstance(data, dict):
-            raise ValueError(f"{GATE_CONFIG_FILENAME} 顶层必须是映射：{path}")
+            raise ValueError(f"{GATE_CONFIG_FILENAME} top level must be a mapping: {path}")
         raw_steps = data.get("steps")
         if not isinstance(raw_steps, list) or not raw_steps:
-            raise ValueError(f"{GATE_CONFIG_FILENAME} 需要非空 steps 列表：{path}")
+            raise ValueError(f"{GATE_CONFIG_FILENAME} needs a non-empty steps list: {path}")
         steps: list[GateStep] = []
         for i, item in enumerate(raw_steps, 1):
             if not isinstance(item, dict) or "name" not in item or "command" not in item:
-                raise ValueError(f"{GATE_CONFIG_FILENAME} 第 {i} 步缺 name 或 command：{path}")
+                raise ValueError(f"{GATE_CONFIG_FILENAME} step {i} is missing name or command: {path}")
             command = item["command"]
             if isinstance(command, str):
                 command = shlex.split(command)
@@ -122,7 +126,7 @@ class GatePipeline:
                 isinstance(c, str) for c in command
             ):
                 raise ValueError(
-                    f"{GATE_CONFIG_FILENAME} 第 {i} 步 command 必须是字符串列表：{path}"
+                    f"{GATE_CONFIG_FILENAME} step {i} command must be a list of strings: {path}"
                 )
             steps.append(
                 GateStep(

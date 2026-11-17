@@ -1,9 +1,11 @@
-"""派工计划校验器：设计文档 §2 的"校验八项"。
+"""Dispatch plan validator: the "eight checks" of design doc §2.
 
-命令行：python -m superdev.check <派工计划.yml> [仓库根目录]
-check_plan 返回中文问题清单（含警告），空列表即通过。
-基础三项（id 唯一、depends_on 引用存在、状态枚举）委托 ledger.validate_basic，
-拆行去重后并入清单；本模块补齐台账格式之外的八项规则。
+CLI: python -m superdev.check <plan.yml> [repo root]
+check_plan returns a problem list (warnings included); an empty list means
+the plan passes. The three basic checks (unique ids, depends_on references
+exist, status enumeration) are delegated to ledger.validate_basic, split
+into lines, deduped, and merged into the list; this module supplies the
+eight rules beyond the ledger format itself.
 """
 from __future__ import annotations
 
@@ -16,29 +18,32 @@ from superdev.ledger import LedgerError, Plan, Task, load_plan, validate_basic
 
 __all__ = ["check_plan", "main"]
 
-# §8.1 的拆分区间：任务数 1–50；0 个直接无法派发
+# Split window of §8.1: 1–50 tasks; 0 tasks simply cannot be dispatched
 MIN_TASKS = 1
 MAX_TASKS = 50
 
-# §2 引擎与工人归属：工人只准动模块仓的这几处，管理端只写台账
+# §2 engine/worker ownership: workers may only touch these spots in the
+# module repo; the manager writes only the ledger
 _OWNED_PREFIXES = ("superdev/", "tests/", "commands/", "agents/")
-_OWNED_FILES = ("README.md", "superdev_cli.py", "pytest.ini")  # 仓库根的入口与配置，验收时补录
+_OWNED_FILES = ("README.md", "superdev_cli.py", "pytest.ini")  # repo-root entry points and config, added for acceptance
 
-# 依赖已齐的状态：下游 ready 任务可立刻并行派发
+# Statuses whose dependencies are satisfied: downstream ready tasks can be dispatched in parallel at once
 _DONE_STATUSES = frozenset({"done", "merged"})
 
-# §1.1 第 5 条：复现微任务必须带一条命令就能重跑的脚本
+# §1.1 item 5: a repro micro-task must carry a script that can be rerun with a single command
 _REPRO_ID_PREFIX = "repro:"
 _REPRO_SUFFIXES = (".sh", ".py", ".ps1")
 
-# 收口函数：同一条消息只进清单一次（validate_basic 的结果与本地发现去重）
+# Sink function: the same message enters the list only once (dedupes
+# validate_basic output against local findings)
 _Add = Callable[[str], None]
 
 
 def check_plan(plan: Plan, *, knowledge_dir: str | Path | None = None) -> list[str]:
-    """逐项校验派工计划，返回中文问题清单，空列表 = 通过。
+    """Run every check on the dispatch plan and return the problem list; empty list = pass.
 
-    knowledge_dir 是仓库根目录，复现脚本按它解析相对路径；缺省用当前工作目录。
+    knowledge_dir is the repo root; repro scripts resolve relative paths
+    against it. Defaults to the current working directory.
     """
     errors: list[str] = []
     seen: set[str] = set()
@@ -62,13 +67,13 @@ def check_plan(plan: Plan, *, knowledge_dir: str | Path | None = None) -> list[s
 def _check_task_count(plan: Plan, add: _Add) -> None:
     n = len(plan.tasks)
     if n == 0:
-        add(f"任务数量为 0：派工计划至少要有 {MIN_TASKS} 个任务，空计划无法派发")
+        add(f"Task count is 0: a plan needs at least {MIN_TASKS} task(s); an empty plan cannot be dispatched")
     elif n > MAX_TASKS:
-        add(f"警告：任务数量 {n} 超过 {MAX_TASKS} 个，拆分粒度失衡，建议管理端重拆（§8.1）")
+        add(f"Warning: task count {n} exceeds {MAX_TASKS}; split granularity is off, the manager should re-split (§8.1)")
 
 
 def _check_basic_and_cycles(plan: Plan, add: _Add) -> None:
-    """基础校验委托 ledger.validate_basic，环检测只在本模块做。"""
+    """Basic checks delegate to ledger.validate_basic; cycle detection lives only in this module."""
     try:
         validate_basic(plan)
     except LedgerError as e:
@@ -80,7 +85,7 @@ def _check_basic_and_cycles(plan: Plan, add: _Add) -> None:
 
 
 def _check_cycles(tasks: list[Task], add: _Add) -> None:
-    """同 group 任务内做拓扑环检测；无 group 字段视为各自独立（单人成组）。"""
+    """Topological cycle detection within each task group; tasks without a group field are each their own group (group of one)."""
     groups: dict[tuple, list[Task]] = {}
     for task in tasks:
         group = getattr(task, "group", None)
@@ -98,11 +103,11 @@ def _check_cycles(tasks: list[Task], add: _Add) -> None:
             stack.append(tid)
             for dep in by_id[tid].depends_on:
                 if dep not in by_id:
-                    continue  # 跨组依赖或悬空引用：环只在本组内找
+                    continue  # cross-group dependency or dangling reference: cycles are searched within the group only
                 if color[dep] == GRAY:
                     cycle = stack[stack.index(dep):] + [dep]
-                    where = f"（组 {label}）" if label else ""
-                    add(f"依赖成环{where}：{' → '.join(cycle)}")
+                    where = f" (group {label})" if label else ""
+                    add(f"Dependency cycle{where}: {' -> '.join(cycle)}")
                 elif color[dep] == WHITE:
                     visit(dep)
             stack.pop()
@@ -116,7 +121,7 @@ def _check_cycles(tasks: list[Task], add: _Add) -> None:
 def _check_parallel_readiness(plan: Plan, add: _Add) -> None:
     limit = sum(int(m.get("max_workers") or 0) for m in plan.modules)
     if limit <= 0:
-        return  # 台账没写并发上限，无从比对
+        return  # no concurrency limit in the ledger; nothing to compare against
     status_of = {t.id: t.status for t in plan.tasks}
     ready = [
         t.id
@@ -126,8 +131,8 @@ def _check_parallel_readiness(plan: Plan, add: _Add) -> None:
     ]
     if len(ready) > limit:
         add(
-            f"警告：并行就绪任务 {len(ready)} 个（{'、'.join(ready)}），"
-            f"超过全部模块 max_workers 总和 {limit}，派发前先收口或调大并发"
+            f"Warning: {len(ready)} tasks ready in parallel ({', '.join(ready)}), "
+            f"exceeding the sum of all modules' max_workers ({limit}); close some out or raise the limit before dispatching"
         )
 
 
@@ -139,22 +144,23 @@ def _check_files_owned(plan: Plan, add: _Add) -> None:
             )
             if not owned:
                 add(
-                    f"任务 {task.id} 的 files 越界：{path}"
-                    "（只允许 superdev/、tests/、commands/、agents/ 及仓库根的 README.md、superdev_cli.py、pytest.ini）"
+                    f"Task {task.id} file out of bounds: {path}"
+                    " (only superdev/, tests/, commands/, agents/ and repo-root README.md, superdev_cli.py, pytest.ini are allowed)"
                 )
 
 
 def _check_strategy_cites(plan: Plan, add: _Add) -> None:
-    # Task 不保存这两个字段，靠属性探测；计划里没写就视为无策略变更
+    # Task does not store these two fields; probe via attributes. Absent
+    # from the plan means no strategy change.
     for task in plan.tasks:
         changes = getattr(task, "strategy_changes", None)
         if not changes:
             continue
         notes = getattr(task, "research_notes", None)
         if not notes:
-            add(f"任务 {task.id} 有策略变更但缺 research_notes，派发器直接拒绝（§1.4）")
+            add(f"Task {task.id} has strategy changes but no research_notes; the dispatcher rejects it outright (§1.4)")
         elif not research.strategy_cites(str(changes), str(notes)):
-            add(f"任务 {task.id} 的策略变更没有引用 research_notes 的任何关键词")
+            add(f"Task {task.id} strategy changes do not cite any research_notes keywords")
 
 
 def _check_repro_scripts(plan: Plan, root: Path, add: _Add) -> None:
@@ -165,40 +171,40 @@ def _check_repro_scripts(plan: Plan, root: Path, add: _Add) -> None:
             str(f) for f in task.files if str(f).lower().endswith(_REPRO_SUFFIXES)
         ]
         if not scripts:
-            add(f"任务 {task.id} 是复现任务，files 里必须带一个 .sh/.py/.ps1 复现脚本")
+            add(f"Task {task.id} is a repro task; its files must include a .sh/.py/.ps1 repro script")
         elif not any((root / f).is_file() for f in scripts):
-            add(f"任务 {task.id} 的复现脚本在仓库根 {root} 下不存在：{'、'.join(scripts)}")
+            add(f"Task {task.id}'s repro script does not exist under the repo root {root}: {', '.join(scripts)}")
 
 
 def _check_budgets(plan: Plan, add: _Add) -> None:
     for task in plan.tasks:
         if task.size is None:
-            add(f"任务 {task.id} 未声明 size，研究预算无法按 §1.4 分档核定")
+            add(f"Task {task.id} has no size declared; the research budget cannot be tiered per §1.4")
             continue
         try:
             research.budget(task.size)
         except research.ResearchError as e:
-            add(f"任务 {task.id}：{e}")
+            add(f"Task {task.id}: {e}")
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or len(argv) > 2:
-        print("用法：python -m superdev.check <派工计划.yml> [仓库根目录]", file=sys.stderr)
+        print("Usage: python -m superdev.check <plan.yml> [repo root]", file=sys.stderr)
         return 2
     try:
         plan = load_plan(argv[0])
     except LedgerError as e:
-        print(f"派工计划加载失败：{e}", file=sys.stderr)
+        print(f"Failed to load plan: {e}", file=sys.stderr)
         return 1
     root = Path(argv[1]) if len(argv) == 2 else None
     problems = check_plan(plan, knowledge_dir=root)
     if problems:
-        print(f"校验发现 {len(problems)} 处问题：")
+        print(f"Validation found {len(problems)} problem(s):")
         for p in problems:
             print(f"- {p}")
         return 1
-    print("校验通过：0 处问题")
+    print("Validation passed: 0 problems")
     return 0
 
 
