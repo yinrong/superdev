@@ -10,6 +10,7 @@ import csv
 import io
 import locale
 import subprocess
+import sys
 
 ProcessInfo = dict  # {"pid": int, "name": str, "memory_mb": float, "cmdline": str}
 
@@ -49,13 +50,36 @@ def parse_tasklist(text: str) -> list[ProcessInfo]:
     return procs
 
 
+def _parse_ps(text: str) -> list[ProcessInfo]:
+    """解析 `ps -eo pid,comm,rss --no-headers` 输出（POSIX 兜底，跨平台 CI 用）。"""
+    procs: list[ProcessInfo] = []
+    for line in text.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            memory_mb = float(parts[2]) / 1024.0
+        except ValueError:
+            continue
+        procs.append(
+            {"pid": pid, "name": parts[1], "memory_mb": memory_mb, "cmdline": ""}
+        )
+    return procs
+
+
 def snapshot() -> list[ProcessInfo]:
-    """当前进程快照（subprocess 调 tasklist，标准库实现）。"""
-    result = subprocess.run(
-        ["tasklist", "/FO", "CSV", "/NH"], capture_output=True
-    )
+    """当前进程快照（标准库实现）。Windows 走 tasklist，POSIX 走 ps，都不在则抛 OSError。"""
     encoding = locale.getpreferredencoding(False) or "utf-8"
-    return parse_tasklist(result.stdout.decode(encoding, errors="replace"))
+    if sys.platform == "win32":
+        result = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"], capture_output=True
+        )
+        return parse_tasklist(result.stdout.decode(encoding, errors="replace"))
+    result = subprocess.run(
+        ["ps", "-eo", "pid,comm,rss", "--no-headers"], capture_output=True
+    )
+    return _parse_ps(result.stdout.decode(encoding, errors="replace"))
 
 
 def enforce(snapshot: list[ProcessInfo], mem_limit_mb: float = 8192) -> list[dict]:
